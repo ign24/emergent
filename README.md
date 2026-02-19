@@ -22,14 +22,14 @@ A personal, local-first autonomous agent powered by Claude API. Accessible via T
 
 ```mermaid
 flowchart LR
-  Telegram --> TelegramGateway --> AgentRuntime[AgentRuntime (ReAct loop)]
+  Telegram --> TelegramGateway --> AgentRuntime["AgentRuntime<br/>ReAct loop"]
   AgentRuntime --> ContextBuilder
-  AgentRuntime --> ClaudeAPI[Claude API]
+  AgentRuntime --> ClaudeAPI["Claude API"]
   AgentRuntime --> ToolRegistry
-  ContextBuilder --> SQLite[SQLite (L0)]
-  ContextBuilder --> ChromaDB[ChromaDB (L1)]
-  ToolRegistry --> Tier1[TIER_1 (auto)\nshell/files/web]
-  ToolRegistry --> Tier2[TIER_2/3 (confirm/block)\ndestructive ops]
+  ContextBuilder --> SQLite["SQLite L0"]
+  ContextBuilder --> ChromaDB["ChromaDB L1"]
+  ToolRegistry --> Tier1["TIER_1 auto<br/>shell/files/web"]
+  ToolRegistry --> Tier2["TIER_2/3 confirm/block<br/>destructive ops"]
 ```
 
 ## Safety Tiers
