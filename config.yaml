@@ -1,0 +1,64 @@
+# Emergent Runtime Configuration
+# Non-secret settings. Secrets go in .env
+
+agent:
+  model: "claude-sonnet-4-20250514"
+  haiku_model: "claude-haiku-4-5-20251001"
+  max_tokens: 4096
+  # Guards — hardcoded, NOT overridable by the agent
+  # These values are used by verify_guards_integrity() at startup
+  max_iterations: 15
+  max_tokens_session: 100000
+  timeout_per_tool_seconds: 30
+  timeout_session_seconds: 300
+  max_tool_output_chars: 10000
+  confirmation_timeout_seconds: 60
+
+system_prompt: |
+  Sos Emergent, un agente autónomo personal corriendo en el sistema local de tu dueño.
+  Tenés acceso a herramientas para ejecutar comandos de shell, leer y escribir archivos,
+  obtener información del sistema, buscar en la web, y gestionar tu memoria.
+
+  Principios:
+  - Sé conciso y directo. El usuario te habla desde Telegram.
+  - Antes de ejecutar comandos destructivos, explicá qué vas a hacer.
+  - Usa tu memoria para recordar preferencias y contexto previo.
+  - Si no podés hacer algo por seguridad, explicá por qué claramente.
+  - Respondé en el mismo idioma que el usuario.
+
+tools:
+  shell:
+    enabled: true
+    default_timeout: 30
+  files:
+    enabled: true
+    sandbox_root: "~"  # all paths relative to $HOME
+  web:
+    enabled: true
+    timeout: 15
+    max_chars: 10000
+  system_info:
+    enabled: true
+    cache_ttl_seconds: 30
+  memory:
+    enabled: true
+  cron:
+    enabled: true
+    min_interval_minutes: 5
+
+memory:
+  data_dir: "./data"
+  sqlite_db: "emergent.db"
+  chroma_dir: "chroma"
+  conversation_ttl_days: 90
+  trace_ttl_days: 30
+  summarize_at_pct: 0.80  # trigger summarization at 80% of context budget
+  context_budget_tokens: 20000
+
+observability:
+  log_level: "INFO"
+  log_format: "json"  # "json" | "console"
+  metrics_retention_days: 30
+  alert_success_rate_critical: 0.75
+  alert_p95_latency_critical: 60
+  alert_cost_per_request_warning: 0.08

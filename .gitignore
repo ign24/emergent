@@ -1,0 +1,48 @@
+# Secrets
+.env
+*.env.local
+
+# Runtime data
+data/
+artifacts/
+*.db
+*.db-wal
+*.db-shm
+chroma/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# uv / venv
+.venv/
+venv/
+.python-version
+
+# Tools
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
