@@ -1,4 +1,4 @@
-"""Cron scheduling tool using APScheduler."""
+"""Cron scheduling tool using APScheduler with SQLite persistence."""
 
 from __future__ import annotations
 
@@ -16,15 +16,54 @@ logger = structlog.get_logger(__name__)
 
 MIN_INTERVAL_MINUTES = 5
 
-# Global scheduler instance (singleton)
+# Module-level singletons
 _scheduler: AsyncIOScheduler | None = None
+_run_callback: Callable[[str], Awaitable[str]] | None = None
+
+
+def init_scheduler(
+    db_url: str,
+    run_callback: Callable[[str], Awaitable[str]] | None = None,
+) -> AsyncIOScheduler:
+    """
+    Initialize the scheduler with SQLite persistence. Call once at startup.
+
+    Args:
+        db_url: SQLAlchemy URL, e.g. 'sqlite:////abs/path/to/emergent.db'
+        run_callback: async function(prompt) -> str called when a job fires.
+    """
+    global _scheduler, _run_callback
+    _run_callback = run_callback
+
+    from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+
+    _scheduler = AsyncIOScheduler(
+        jobstores={"default": SQLAlchemyJobStore(url=db_url)},
+    )
+    logger.info("scheduler_initialized", db_url=db_url, has_callback=run_callback is not None)
+    return _scheduler
 
 
 def get_scheduler() -> AsyncIOScheduler:
     global _scheduler
     if _scheduler is None:
+        # Fallback: in-memory scheduler (no persistence) — for tests or headless use
         _scheduler = AsyncIOScheduler()
     return _scheduler
+
+
+async def _run_prompt_job(prompt: str) -> None:
+    """Top-level job function (picklable). Calls the module-level run_callback."""
+    logger.info("cron_job_fired", prompt=prompt[:60])
+    cb = _run_callback
+    if cb is None:
+        logger.warning("cron_job_no_callback", prompt=prompt[:60])
+        return
+    try:
+        result = await cb(prompt)
+        logger.info("cron_job_done", result_len=len(result))
+    except Exception as e:
+        logger.error("cron_job_failed", error=str(e), prompt=prompt[:60])
 
 
 async def cron_schedule(
@@ -37,7 +76,7 @@ async def cron_schedule(
     if action == "list":
         return _list_jobs()
     elif action == "create":
-        return await _create_job(tool_input, run_agent_callback)
+        return await _create_job(tool_input)
     elif action == "delete":
         return _delete_job(tool_input)
     else:
@@ -56,10 +95,7 @@ def _list_jobs() -> str:
     return "\n".join(lines)
 
 
-async def _create_job(
-    tool_input: dict[str, Any],
-    run_agent_callback: Callable[[str], Awaitable[str]] | None,
-) -> str:
+async def _create_job(tool_input: dict[str, Any]) -> str:
     cron_expr = str(tool_input.get("cron_expression", ""))
     prompt = str(tool_input.get("prompt", "")).strip()
     job_id = str(tool_input.get("job_id", str(uuid.uuid4())[:8]))
@@ -82,51 +118,27 @@ async def _create_job(
                 "CRON_PROMPT_BLOCKED: cron prompts cannot contain write/destructive intent"
             )
 
-    # Validate minimum interval
     try:
         trigger = CronTrigger.from_crontab(cron_expr)
     except Exception as e:
         return f"Error: invalid cron expression '{cron_expr}': {e}"
 
     scheduler = get_scheduler()
-
-    if run_agent_callback is None:
-        # Store job info without actual callback (headless mode not available)
-        scheduler.add_job(
-            _noop_job,
-            trigger=trigger,
-            id=job_id,
-            name=f"emergent:{prompt[:30]}",
-            replace_existing=True,
-            kwargs={"prompt": prompt},
-        )
-    else:
-
-        async def run_job(p: str = prompt) -> None:
-            logger.info("cron_job_running", job_id=job_id, prompt=p[:50])
-            try:
-                result = await run_agent_callback(p)
-                logger.info("cron_job_done", job_id=job_id, result_len=len(result))
-            except Exception as e:
-                logger.error("cron_job_failed", job_id=job_id, error=str(e))
-
-        scheduler.add_job(
-            run_job,
-            trigger=trigger,
-            id=job_id,
-            name=f"emergent:{prompt[:30]}",
-            replace_existing=True,
-        )
+    scheduler.add_job(
+        _run_prompt_job,
+        trigger=trigger,
+        id=job_id,
+        name=f"emergent:{prompt[:30]}",
+        replace_existing=True,
+        kwargs={"prompt": prompt},
+    )
 
     if not scheduler.running:
         scheduler.start()
 
+    persistence = "con persistencia SQLite" if hasattr(scheduler, "_jobstores") and "default" in scheduler._jobstores else "en memoria"
     logger.info("cron_job_created", job_id=job_id, cron=cron_expr, prompt=prompt[:50])
-    return f"Job '{job_id}' creado con cron '{cron_expr}'."
-
-
-async def _noop_job(prompt: str) -> None:
-    logger.info("cron_noop_job_fired", prompt=prompt[:50])
+    return f"Job '{job_id}' creado ({persistence}) con cron '{cron_expr}'."
 
 
 def _delete_job(tool_input: dict[str, Any]) -> str:

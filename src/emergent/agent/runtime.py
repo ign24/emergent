@@ -27,6 +27,12 @@ from typing import TYPE_CHECKING, Any
 
 import anthropic
 import structlog
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from emergent import (
     ContextOverflowError,
@@ -152,7 +158,7 @@ class AgentRuntime:
                     if tool_defs:
                         kwargs["tools"] = tool_defs
 
-                    response = await self._client.messages.create(**kwargs)
+                    response = await self._call_with_retry(**kwargs)
 
                     call_duration_ms = (time.monotonic() - call_start) * 1000
                     total_input_tokens += response.usage.input_tokens
@@ -256,6 +262,16 @@ class AgentRuntime:
         )
 
         return response_text, trace_data
+
+    @retry(
+        retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APITimeoutError)),
+        wait=wait_exponential(multiplier=1, min=1, max=30),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
+    async def _call_with_retry(self, **kwargs: Any) -> Any:
+        """Call Claude API with automatic retry on transient errors."""
+        return await self._client.messages.create(**kwargs)
 
     async def _handle_tool_calls(
         self,

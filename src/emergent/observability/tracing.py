@@ -24,15 +24,46 @@ class TraceEvent:
     parent_span_id: str | None = None
 
 
-def configure_logging(log_level: str = "INFO", log_format: str = "json") -> None:
-    """Configure structlog for the application."""
+def configure_logging(
+    log_level: str = "INFO",
+    log_format: str = "json",
+    log_file: str | None = None,
+    max_bytes: int = 10 * 1024 * 1024,  # 10 MB
+    backup_count: int = 5,
+) -> None:
+    """Configure structlog for the application.
+
+    Args:
+        log_level: Logging level (DEBUG, INFO, WARNING, ERROR).
+        log_format: 'json' for structured JSON (production) or 'console' for human-readable.
+        log_file: Optional path to write logs. Enables rotation at max_bytes with backup_count files.
+                  If None, logs go to stdout only.
+        max_bytes: Max size per log file before rotation (default 10MB).
+        backup_count: Number of rotated files to keep (default 5).
+    """
     import logging
+    import logging.handlers
     import sys
 
-    logging.basicConfig(
-        stream=sys.stdout,
-        level=getattr(logging, log_level.upper(), logging.INFO),
-    )
+    level = getattr(logging, log_level.upper(), logging.INFO)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    root_logger.handlers.clear()
+
+    if log_file:
+        from pathlib import Path
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+        handler: logging.Handler = logging.handlers.RotatingFileHandler(
+            log_file,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+    else:
+        handler = logging.StreamHandler(sys.stdout)
+
+    handler.setLevel(level)
+    root_logger.addHandler(handler)
 
     processors: list[Any] = [
         structlog.contextvars.merge_contextvars,

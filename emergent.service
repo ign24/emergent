@@ -1,0 +1,31 @@
+[Unit]
+Description=Emergent — Autonomous Agent Runtime
+Documentation=https://github.com/user/emergent
+After=network-online.target
+Wants=network-online.target
+# Restart if it dies, but not on clean exit
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=nacho
+WorkingDirectory=/home/nacho/dev/Datos/Proyectos/emergent
+ExecStart=/home/nacho/.local/bin/uv run python -m emergent
+Restart=on-failure
+RestartSec=10
+
+# Logs go to journald (use: journalctl -u emergent -f)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=emergent
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+# Graceful shutdown: send SIGTERM, wait 30s, then SIGKILL
+TimeoutStopSec=30
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

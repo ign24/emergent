@@ -23,7 +23,8 @@ async def _run() -> None:
     obs_cfg = settings.observability or {}
     configure_logging(
         log_level=obs_cfg.get("log_level", "INFO"),
-        log_format=obs_cfg.get("log_format", "console"),  # console for dev
+        log_format=obs_cfg.get("log_format", "console"),
+        log_file=obs_cfg.get("log_file"),  # None → stdout; set path in config.yaml for rotation
     )
 
     log = structlog.get_logger(__name__)
@@ -45,7 +46,7 @@ async def _run() -> None:
     from emergent.memory.store import MemoryStore
     from emergent.tools import ExecutionContext, create_registry
     from emergent.tools.cron import TOOL_DEFINITION as CRON_TOOL_DEF
-    from emergent.tools.cron import cron_schedule
+    from emergent.tools.cron import cron_schedule, init_scheduler
     from emergent.tools.memory_tools import (
         MEMORY_SEARCH_DEFINITION,
         MEMORY_STORE_DEFINITION,
@@ -86,7 +87,46 @@ async def _run() -> None:
         )
     )
 
-    # Add cron tool
+    # Agent runtime (created before cron so callback can reference it)
+    runtime = AgentRuntime(
+        settings=settings,
+        registry=registry,
+    )
+
+    # Telegram gateway
+    gateway = TelegramGateway(
+        settings=settings,
+        runtime=runtime,
+        store=store,
+        context_builder=context_builder,
+    )
+
+    # --- Cron callback: runs a prompt headlessly and notifies via Telegram ---
+    async def _cron_run_callback(prompt: str) -> str:
+        log.info("cron_callback_invoked", prompt=prompt[:60])
+        try:
+            response_text, _ = await runtime.run(
+                user_message=prompt,
+                session_id="cron_headless",
+            )
+        except Exception as e:
+            log.error("cron_callback_runtime_error", error=str(e))
+            response_text = f"[cron] Error al ejecutar: {e}"
+
+        # Notify all allowed users via Telegram
+        for chat_id in settings.telegram.allowed_user_ids:
+            try:
+                await gateway._bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⏰ *[cron]* `{prompt[:50]}`\n\n{response_text}",
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                log.error("cron_telegram_notify_failed", chat_id=chat_id, error=str(e))
+
+        return response_text
+
+    # Add cron tool (wired with callback)
     async def _cron_handler(tool_input: dict) -> str:
         return await cron_schedule(tool_input)
 
@@ -100,10 +140,11 @@ async def _run() -> None:
         )
     )
 
-    # Register maintenance APScheduler jobs
-    from emergent.tools.cron import get_scheduler
+    # Initialize scheduler with SQLite persistence and the Telegram callback
+    db_url = f"sqlite:///{db_path.resolve()}"
+    scheduler = init_scheduler(db_url=db_url, run_callback=_cron_run_callback)
 
-    scheduler = get_scheduler()
+    # Register maintenance jobs (replace_existing=True so they survive re-registration)
     scheduler.add_job(
         store.cleanup_old_data,
         trigger="cron",
@@ -123,23 +164,8 @@ async def _run() -> None:
         name="decay_profile_confidence",
         replace_existing=True,
     )
-    if not scheduler.running:
-        scheduler.start()
-    log.info("maintenance_jobs_registered")
-
-    # Agent runtime
-    runtime = AgentRuntime(
-        settings=settings,
-        registry=registry,
-    )
-
-    # Telegram gateway
-    gateway = TelegramGateway(
-        settings=settings,
-        runtime=runtime,
-        store=store,
-        context_builder=context_builder,
-    )
+    scheduler.start()
+    log.info("scheduler_started", persistent_db=db_url)
 
     # Graceful shutdown
     loop = asyncio.get_running_loop()
@@ -151,6 +177,16 @@ async def _run() -> None:
     loop.add_signal_handler(signal.SIGTERM, _handle_sigterm)
 
     log.info("emergent_ready", allowed_users=len(settings.telegram.allowed_user_ids))
+
+    from emergent.observability.banner import print_banner
+    print_banner(
+        version="0.1.0",
+        model=settings.agent.model,
+        db_path=str(db_path),
+        chroma_dir=str(chroma_dir),
+        allowed_users=len(settings.telegram.allowed_user_ids),
+        scheduler_jobs=len(scheduler.get_jobs()),
+    )
 
     try:
         await gateway.start()

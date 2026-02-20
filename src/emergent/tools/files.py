@@ -120,9 +120,12 @@ async def file_write(tool_input: dict[str, Any]) -> str:
 
     try:
         if mode == "create":
-            if resolved.exists():
+            try:
+                # Atomic create: fails if file exists (no TOCTOU race)
+                with open(resolved, "x", encoding="utf-8") as f:
+                    f.write(content)
+            except FileExistsError:
                 return "Error: file already exists. Use mode='overwrite' to replace it."
-            resolved.write_text(content)
             action = "created"
         elif mode == "overwrite":
             resolved.write_text(content)

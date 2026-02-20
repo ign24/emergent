@@ -297,10 +297,12 @@ class MemoryStore:
         self, conversations_ttl_days: int = 90, traces_ttl_days: int = 30
     ) -> None:
         await self._execute(
-            f"DELETE FROM conversations WHERE timestamp < datetime('now', '-{conversations_ttl_days} days')"
+            "DELETE FROM conversations WHERE timestamp < datetime('now', ? || ' days')",
+            (f"-{int(conversations_ttl_days)}",),
         )
         await self._execute(
-            f"DELETE FROM traces WHERE timestamp < datetime('now', '-{traces_ttl_days} days')"
+            "DELETE FROM traces WHERE timestamp < datetime('now', ? || ' days')",
+            (f"-{int(traces_ttl_days)}",),
         )
         logger.info("cleanup_done", conv_ttl=conversations_ttl_days, trace_ttl=traces_ttl_days)
 

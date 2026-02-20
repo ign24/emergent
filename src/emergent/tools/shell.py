@@ -27,7 +27,7 @@ async def shell_execute(tool_input: dict[str, Any]) -> str:
     """Execute a bash command and return stdout/stderr."""
     command = str(tool_input.get("command", "")).strip()
     timeout_seconds = int(tool_input.get("timeout_seconds", 30))
-    timeout_seconds = min(timeout_seconds, 120)  # cap at 120s
+    timeout_seconds = max(1, min(timeout_seconds, 120))  # clamp to [1, 120]
 
     if not command:
         return json.dumps({"error": "Empty command"})
