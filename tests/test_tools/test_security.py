@@ -54,6 +54,32 @@ class TestPrivilegeEscalation:
         """Subshell containing dangerous command is TIER_3."""
         assert classify_command("echo $(rm -rf /tmp/test)") == SafetyTier.TIER_3_BLOCKED
 
+    def test_python_c_bypass(self):
+        """python -c can execute arbitrary code bypassing rm patterns."""
+        assert (
+            classify_command("python3 -c 'import os; os.system(\"rm -rf /\")'")
+            == SafetyTier.TIER_3_BLOCKED
+        )
+
+    def test_eval_bypass(self):
+        """eval can reconstruct dangerous commands from innocuous strings."""
+        assert classify_command("eval 'r''m -rf /'") == SafetyTier.TIER_3_BLOCKED
+
+    def test_find_delete_bypass(self):
+        """find -delete destroys files without triggering rm patterns."""
+        assert classify_command("find / -name '*' -delete") == SafetyTier.TIER_3_BLOCKED
+
+    def test_xargs_rm_bypass(self):
+        """xargs rm bypasses the rm -rf pattern check."""
+        assert classify_command("ls | xargs rm") == SafetyTier.TIER_3_BLOCKED
+
+    def test_node_e_exfil(self):
+        """node -e can exfiltrate data via HTTP."""
+        assert (
+            classify_command("node -e 'require(\"fs\").readFileSync(\"/etc/passwd\")'")
+            == SafetyTier.TIER_3_BLOCKED
+        )
+
 
 class TestDataLeakage:
     async def test_file_read_env_blocked(self, tmp_path, monkeypatch):

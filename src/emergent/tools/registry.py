@@ -89,6 +89,49 @@ _TIER3_PATTERNS: list[re.Pattern[str]] = [
         r"\b(cat|cp|mv|echo)\s+.*/(\.ssh/id_rsa|\.ssh/id_ed25519|\.env)",
         # Base64 decode pipe to shell
         r"base64\s+-d[^|]*\|[^|]*\b(bash|sh)\b",
+        # Inline code execution (bypass all other patterns)
+        r"\bpython[23]?\s+-c\b",
+        r"\bperl\s+-e\b",
+        r"\bruby\s+-e\b",
+        r"\bnode\s+-e\b",
+        r"\beval\s+",
+        # Destructive find operations
+        r"\bfind\b.*\s-delete\b",
+        r"\bfind\b.*-exec\s+rm\b",
+        # Destructive via xargs
+        r"\bxargs\s+rm\b",
+        r"\bxargs\s+shred\b",
+        # System shutdown / reboot
+        r"\breboot\b",
+        r"\bshutdown\b",
+        r"\bpoweroff\b",
+        r"\bhalt\b",
+        r"\binit\s+0\b",
+        # Irrecoverable deletion
+        r"\bshred\b",
+        r"\btruncate\b",
+        # Crontab removal
+        r"\bcrontab\s+-r\b",
+        # Service disruption (stop/disable/mask)
+        r"\bsystemctl\s+(stop|disable|mask)\b",
+        # Write to critical paths via tee
+        r"\btee\s+/etc/",
+        r"\btee\s+/boot/",
+        r"\btee\s+-a\s+/etc/",
+        # Container escape via host mount
+        r"\bdocker\s+run\b.*-v\s+/:/",
+        # Ownership change on system paths
+        r"\bchown\b.*\s+/(etc|bin|sbin|usr|boot)",
+        # Filesystem mount operations
+        r"\bmount\b",
+        r"\bumount\b",
+        # Remote access / exfiltration
+        r"\bssh\b",
+        r"\bscp\b",
+        r"\brsync\b.*:",
+        # Anti-forensics
+        r"\bhistory\s+-c\b",
+        r"\bunset\s+HISTFILE\b",
     ]
 ]
 
@@ -278,8 +321,8 @@ class ToolRegistry:
 
             return tier
 
-        # file_write: always TIER_2 (overwrite check is handled in the tool itself)
-        if tool_name == "file_write":
+        # file_write / file_move / file_delete: TIER_2, blocked in headless
+        if tool_name in ("file_write", "file_move", "file_delete"):
             if self._execution_context == ExecutionContext.CRON_HEADLESS:
                 return SafetyTier.TIER_3_BLOCKED
             return SafetyTier.TIER_2_CONFIRM

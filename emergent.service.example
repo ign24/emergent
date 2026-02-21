@@ -9,9 +9,9 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=nacho
-WorkingDirectory=/home/nacho/dev/Datos/Proyectos/emergent
-ExecStart=/home/nacho/.local/bin/uv run python -m emergent
+User=YOUR_USERNAME
+WorkingDirectory=/path/to/emergent
+ExecStart=/path/to/uv run python -m emergent
 Restart=on-failure
 RestartSec=10
 

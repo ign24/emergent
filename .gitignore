@@ -2,6 +2,9 @@
 .env
 *.env.local
 
+# Local service config (use emergent.service.example as template)
+emergent.service
+
 # Runtime data
 data/
 artifacts/
