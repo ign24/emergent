@@ -21,6 +21,7 @@ def generate_markdown_report(
     highlights: list[ScoredFinding],
     rest: list[ScoredFinding],
     total_sources: int,
+    report_style: str = "standard",
 ) -> str:
     """Generate markdown report with highlights and findings grouped by domain."""
     now = datetime.now(UTC)
@@ -63,6 +64,12 @@ def generate_markdown_report(
             )
         lines.append("")
 
+    _append_style_section(
+        lines=lines,
+        report_style=report_style,
+        findings=[*highlights, *rest],
+    )
+
     total_findings = len(highlights) + len(rest)
     lines.extend(
         [
@@ -75,6 +82,63 @@ def generate_markdown_report(
         ]
     )
     return "\n".join(lines)
+
+
+def _append_style_section(
+    *,
+    lines: list[str],
+    report_style: str,
+    findings: list[ScoredFinding],
+) -> None:
+    style = report_style.strip().lower()
+    if style == "academic-researcher":
+        lines.extend(
+            [
+                "## Methodology",
+                "",
+                "- Sources were collected asynchronously from configured public APIs.",
+                "- Ranking uses deterministic scoring (recency, engagement, relevance, authority).",
+                "- Duplicate URLs were removed prior to scoring.",
+                "",
+                "## Evidence Quality Notes",
+                "",
+                "- Prefer primary sources (papers, release notes, official docs).",
+                "- Treat community-only signals as directional unless corroborated.",
+                "",
+            ]
+        )
+        return
+
+    if style == "data-analyst":
+        by_source: dict[str, int] = defaultdict(int)
+        scores: list[float] = []
+        for item in findings:
+            by_source[item.finding.source] += 1
+            scores.append(item.score)
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+        max_score = max(scores) if scores else 0.0
+
+        lines.extend(["## Metrics Snapshot", "", "| Metric | Value |", "|---|---|"])
+        lines.append(f"| Findings total | {len(findings)} |")
+        lines.append(f"| Mean score | {avg_score:.2f} |")
+        lines.append(f"| Max score | {max_score:.2f} |")
+        for source in sorted(by_source):
+            lines.append(f"| Source `{source}` | {by_source[source]} |")
+        lines.append("")
+        return
+
+    if style == "visualization-expert":
+        lines.extend(
+            [
+                "## Suggested Visualizations",
+                "",
+                "- Bar chart: findings per domain.",
+                "- Stacked bar: source distribution inside each domain.",
+                "- Line chart: weekly highlight count trend.",
+                "- Scatter plot: score vs. recency for top findings.",
+                "",
+            ]
+        )
 
 
 def generate_telegram_digest(
@@ -101,4 +165,7 @@ def generate_telegram_digest(
     digest = "\n".join(lines)
     if len(digest) <= max_chars:
         return digest
-    return digest[: max_chars - 21] + "\n[... digest truncated]"
+    suffix = "\n[... digest truncated]"
+    if max_chars <= len(suffix):
+        return suffix[:max_chars]
+    return digest[: max_chars - len(suffix)] + suffix

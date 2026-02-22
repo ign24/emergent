@@ -35,10 +35,11 @@ class SemanticRetriever:
         self._chroma_dir = str(chroma_dir)
         self._client: Any = None
         self._collection: Any = None
+        self._research_collection: Any = None
 
     def _ensure_initialized(self) -> bool:
         """Lazy initialization of ChromaDB. Returns False if unavailable."""
-        if self._collection is not None:
+        if self._collection is not None and self._research_collection is not None:
             return True
         try:
             import chromadb
@@ -46,6 +47,10 @@ class SemanticRetriever:
             self._client = chromadb.PersistentClient(path=self._chroma_dir)
             self._collection = self._client.get_or_create_collection(
                 name="conversations",
+                metadata={"hnsw:space": "cosine"},
+            )
+            self._research_collection = self._client.get_or_create_collection(
+                name="research",
                 metadata={"hnsw:space": "cosine"},
             )
             logger.info("chromadb_initialized", path=self._chroma_dir)
@@ -119,6 +124,7 @@ class SemanticRetriever:
             results["documents"][0],
             results["metadatas"][0],
             results["distances"][0],
+            strict=False,
         ):
             # cosine distance → similarity score (1 = identical, 0 = unrelated)
             score = 1.0 - dist
@@ -140,3 +146,82 @@ class SemanticRetriever:
         """Return memory snippets as plain text for context injection."""
         results = await self.search(query, top_k=top_k)
         return [r["content"] for r in results if r["relevance_score"] >= min_score]
+
+    async def upsert_research_findings(self, findings: list[Any]) -> int:
+        """Index research findings in dedicated research collection."""
+        if not self._ensure_initialized():
+            return 0
+
+        docs_added = 0
+        now = time.time()
+        for idx, item in enumerate(findings):
+            finding = getattr(item, "finding", item)
+            url = str(getattr(finding, "url", ""))
+            title = str(getattr(finding, "title", ""))
+            summary = str(getattr(finding, "summary", ""))
+            source = str(getattr(finding, "source", "unknown"))
+            domain = str(getattr(finding, "domain", "unknown"))
+            score_raw = getattr(item, "score", 0.0)
+            score = float(score_raw) if isinstance(score_raw, (float, int)) else 0.0
+            if not url or not title:
+                continue
+
+            doc_id = f"research_{abs(hash(url))}_{idx}"
+            content = f"{title}\n\n{summary}\n\nURL: {url}"
+            try:
+                self._research_collection.upsert(
+                    ids=[doc_id],
+                    documents=[content[:4000]],
+                    metadatas=[
+                        {
+                            "url": url,
+                            "title": title[:500],
+                            "source": source,
+                            "domain": domain,
+                            "score": score,
+                            "timestamp": now,
+                        }
+                    ],
+                )
+                docs_added += 1
+            except Exception as e:
+                logger.warning("chromadb_research_upsert_error", error=str(e), doc_id=doc_id)
+        return docs_added
+
+    async def search_research(self, query: str, n_results: int = 5) -> list[dict[str, Any]]:
+        """Search semantic research collection."""
+        if not self._ensure_initialized():
+            return []
+        try:
+            results = self._research_collection.query(
+                query_texts=[query],
+                n_results=min(max(1, n_results), 10),
+                include=["documents", "metadatas", "distances"],
+            )
+        except Exception as e:
+            logger.warning("chromadb_research_search_failed", error=str(e))
+            return []
+
+        docs = results.get("documents", [[]])
+        if not docs or not docs[0]:
+            return []
+
+        output: list[dict[str, Any]] = []
+        for doc, meta, dist in zip(
+            results["documents"][0],
+            results["metadatas"][0],
+            results["distances"][0],
+            strict=False,
+        ):
+            score = round(1.0 - float(dist), 3)
+            output.append(
+                {
+                    "title": meta.get("title", ""),
+                    "url": meta.get("url", ""),
+                    "source": meta.get("source", ""),
+                    "domain": meta.get("domain", ""),
+                    "summary": doc[:500],
+                    "relevance_score": score,
+                }
+            )
+        return output

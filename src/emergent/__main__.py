@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import structlog
+from apscheduler.triggers.cron import CronTrigger
 
 logger = structlog.get_logger(__name__)
 
@@ -47,6 +48,7 @@ async def _run() -> None:
     from emergent.channels.telegram import TelegramGateway
     from emergent.memory.retriever import SemanticRetriever
     from emergent.memory.store import MemoryStore
+    from emergent.research.worker import ResearchWorker
     from emergent.tools import ExecutionContext, create_registry
     from emergent.tools.cron import TOOL_DEFINITION as CRON_TOOL_DEF
     from emergent.tools.cron import cron_schedule, init_scheduler
@@ -57,6 +59,12 @@ async def _run() -> None:
         make_memory_store_handler,
     )
     from emergent.tools.registry import SafetyTier, ToolDefinition
+    from emergent.tools.research import (
+        RESEARCH_RUN_DEFINITION,
+        RESEARCH_SEARCH_DEFINITION,
+        make_research_run_handler,
+        make_research_search_handler,
+    )
 
     store = MemoryStore(db_path)
     retriever = SemanticRetriever(chroma_dir)
@@ -205,6 +213,47 @@ async def _run() -> None:
         name="decay_profile_confidence",
         replace_existing=True,
     )
+
+    # Research worker + tool wiring
+    research_cfg = settings.research
+    if research_cfg.enabled:
+        research_worker = ResearchWorker(
+            store=store,
+            retriever=retriever,
+            settings=settings,
+            telegram_notify=gateway,
+        )
+        try:
+            trigger = CronTrigger.from_crontab(research_cfg.schedule)
+            scheduler.add_job(
+                research_worker.run,
+                trigger=trigger,
+                id="research_daily",
+                name="daily_research",
+                replace_existing=True,
+            )
+        except Exception as e:
+            log.error("research_schedule_invalid", schedule=research_cfg.schedule, error=str(e))
+
+        registry.register(
+            ToolDefinition(
+                name="research_search",
+                description=RESEARCH_SEARCH_DEFINITION["description"],
+                input_schema=RESEARCH_SEARCH_DEFINITION["input_schema"],
+                handler=make_research_search_handler(store, retriever),
+                safety_tier=SafetyTier.TIER_1_AUTO,
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name="research_run",
+                description=RESEARCH_RUN_DEFINITION["description"],
+                input_schema=RESEARCH_RUN_DEFINITION["input_schema"],
+                handler=make_research_run_handler(research_worker),
+                safety_tier=SafetyTier.TIER_2_CONFIRM,
+            )
+        )
+
     scheduler.start()
     terminal.set_scheduler_jobs(len(scheduler.get_jobs()))
     log.info("scheduler_started", persistent_db=db_url)

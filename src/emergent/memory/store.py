@@ -85,12 +85,34 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS research_findings (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    source TEXT NOT NULL,
+    title TEXT NOT NULL,
+    url TEXT NOT NULL,
+    summary TEXT,
+    relevance_score REAL,
+    is_highlight BOOLEAN DEFAULT 0,
+    published_at DATETIME,
+    metadata_json TEXT,
+    found_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(url)
+);
+
 CREATE INDEX IF NOT EXISTS idx_conversations_session ON conversations(session_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_timestamp ON conversations(timestamp);
 CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON traces(timestamp);
 CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id);
 CREATE INDEX IF NOT EXISTS idx_spans_error ON spans(error) WHERE error IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_profile_confidence ON user_profile(confidence);
+CREATE INDEX IF NOT EXISTS idx_findings_domain ON research_findings(domain);
+CREATE INDEX IF NOT EXISTS idx_findings_score ON research_findings(relevance_score DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_found ON research_findings(found_at);
+CREATE INDEX IF NOT EXISTS idx_findings_highlight
+    ON research_findings(is_highlight) WHERE is_highlight = 1;
+CREATE INDEX IF NOT EXISTS idx_findings_run ON research_findings(run_id);
 """
 
 
@@ -291,6 +313,106 @@ class MemoryStore:
         )
         return rows[0]["session_id"] if rows else None
 
+    # --- Research Findings ---
+
+    async def save_research_findings(self, findings: list[dict[str, Any]]) -> int:
+        """Bulk insert research findings. Returns number of inserted rows."""
+        if not findings:
+            return 0
+
+        before = await self._execute("SELECT COUNT(*) AS count FROM research_findings")
+        params: list[tuple[Any, ...]] = []
+        for finding in findings:
+            params.append(
+                (
+                    str(finding.get("id", uuid.uuid4())),
+                    str(finding.get("run_id", "")),
+                    str(finding.get("domain", "")),
+                    str(finding.get("source", "")),
+                    str(finding.get("title", "")),
+                    str(finding.get("url", "")),
+                    str(finding.get("summary", "")),
+                    float(finding.get("relevance_score", 0.0)),
+                    bool(finding.get("is_highlight", False)),
+                    finding.get("published_at"),
+                    json.dumps(finding.get("metadata", {})),
+                )
+            )
+
+        await self._executemany(
+            "INSERT OR IGNORE INTO research_findings "
+            "(id, run_id, domain, source, title, url, summary, relevance_score, "
+            "is_highlight, published_at, metadata_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params,
+        )
+        after = await self._execute("SELECT COUNT(*) AS count FROM research_findings")
+        return int(after[0]["count"]) - int(before[0]["count"])
+
+    async def get_research_highlights(self, days: int = 7) -> list[dict[str, Any]]:
+        rows = await self._execute(
+            "SELECT * FROM research_findings "
+            "WHERE is_highlight = 1 AND found_at >= datetime('now', ? || ' days') "
+            "ORDER BY relevance_score DESC",
+            (f"-{int(days)}",),
+        )
+        return [self._row_to_research_dict(row) for row in rows]
+
+    async def get_research_by_domain(self, domain: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = await self._execute(
+            "SELECT * FROM research_findings WHERE domain = ? "
+            "ORDER BY relevance_score DESC LIMIT ?",
+            (domain, int(limit)),
+        )
+        return [self._row_to_research_dict(row) for row in rows]
+
+    async def search_research(
+        self, query: str, limit: int = 10, domain: str | None = None
+    ) -> list[dict[str, Any]]:
+        pattern = f"%{query.strip()}%"
+        if domain:
+            rows = await self._execute(
+                "SELECT * FROM research_findings "
+                "WHERE domain = ? AND (title LIKE ? OR summary LIKE ?) "
+                "ORDER BY relevance_score DESC LIMIT ?",
+                (domain, pattern, pattern, int(limit)),
+            )
+        else:
+            rows = await self._execute(
+                "SELECT * FROM research_findings "
+                "WHERE title LIKE ? OR summary LIKE ? "
+                "ORDER BY relevance_score DESC LIMIT ?",
+                (pattern, pattern, int(limit)),
+            )
+        return [self._row_to_research_dict(row) for row in rows]
+
+    async def cleanup_old_research(self, ttl_days: int = 90) -> None:
+        await self._execute(
+            "DELETE FROM research_findings WHERE found_at < datetime('now', ? || ' days')",
+            (f"-{int(ttl_days)}",),
+        )
+
+    def _row_to_research_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        metadata_raw = row["metadata_json"]
+        try:
+            metadata = json.loads(metadata_raw) if metadata_raw else {}
+        except json.JSONDecodeError:
+            metadata = {}
+        return {
+            "id": row["id"],
+            "run_id": row["run_id"],
+            "domain": row["domain"],
+            "source": row["source"],
+            "title": row["title"],
+            "url": row["url"],
+            "summary": row["summary"],
+            "relevance_score": row["relevance_score"],
+            "is_highlight": bool(row["is_highlight"]),
+            "published_at": row["published_at"],
+            "found_at": row["found_at"],
+            "metadata": metadata,
+        }
+
     # --- Cleanup (APScheduler job) ---
 
     async def cleanup_old_data(
@@ -304,6 +426,7 @@ class MemoryStore:
             "DELETE FROM traces WHERE timestamp < datetime('now', ? || ' days')",
             (f"-{int(traces_ttl_days)}",),
         )
+        await self.cleanup_old_research(ttl_days=conversations_ttl_days)
         logger.info("cleanup_done", conv_ttl=conversations_ttl_days, trace_ttl=traces_ttl_days)
 
     async def decay_profile_confidence(self) -> None:

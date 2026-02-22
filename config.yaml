@@ -91,3 +91,12 @@ voice:
   tts_sentence_silence: 0.15
   tts_max_chars: 500
   ui_beep: false
+
+research:
+  enabled: true
+  schedule: "30 9 * * *"
+  max_findings_per_domain: 10
+  highlight_threshold: 0.7
+  max_highlights: 5
+  web_search_provider: "tavily"
+  report_style: "academic-researcher"

@@ -97,3 +97,30 @@ class TestMemoryStore:
         assert len(history) == 1
         assert history[0]["content"] == "Persistent message"
         await store2.close()
+
+    async def test_research_findings_crud(self, tmp_db: MemoryStore):
+        inserted = await tmp_db.save_research_findings(
+            [
+                {
+                    "id": "f1",
+                    "run_id": "r1",
+                    "domain": "agent_architecture",
+                    "source": "github",
+                    "title": "agent runtime release",
+                    "url": "https://example.com/a",
+                    "summary": "details",
+                    "relevance_score": 0.8,
+                    "is_highlight": True,
+                    "published_at": "2026-02-22T00:00:00+00:00",
+                    "metadata": {"stars": 100},
+                }
+            ]
+        )
+        assert inserted == 1
+
+        highlights = await tmp_db.get_research_highlights(days=30)
+        assert len(highlights) == 1
+        by_domain = await tmp_db.get_research_by_domain("agent_architecture")
+        assert len(by_domain) == 1
+        search = await tmp_db.search_research("runtime")
+        assert len(search) == 1

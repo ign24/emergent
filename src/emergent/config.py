@@ -23,6 +23,17 @@ class TelegramConfig:
 
 
 @dataclass
+class ResearchConfig:
+    enabled: bool = True
+    schedule: str = "30 9 * * *"
+    max_findings_per_domain: int = 10
+    highlight_threshold: float = 0.7
+    max_highlights: int = 5
+    web_search_provider: str = "tavily"
+    report_style: str = "standard"
+
+
+@dataclass
 class AgentConfig:
     provider: str = "anthropic"
     model: str = "claude-sonnet-4-20250514"
@@ -61,6 +72,8 @@ class _EnvSettings(BaseSettings):
     EMERGENT_SUMMARY_PROVIDER: str = Field(default="")
     EMERGENT_OLLAMA_BASE_URL: str = Field(default="")
     EMERGENT_DATA_DIR: str = Field(default="")
+    TAVILY_API_KEY: str = Field(default="")
+    GITHUB_TOKEN: str = Field(default="")
 
 
 @dataclass
@@ -70,6 +83,7 @@ class EmergentSettings:
     anthropic_api_key: str = ""
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    research: ResearchConfig = field(default_factory=ResearchConfig)
     system_prompt: str = ""
     memory: dict[str, Any] = field(default_factory=dict)
     observability: dict[str, Any] = field(default_factory=dict)
@@ -118,6 +132,19 @@ def get_settings() -> EmergentSettings:
         anthropic_api_key=env.ANTHROPIC_API_KEY,
         telegram=telegram,
         agent=agent,
+        research=ResearchConfig(
+            enabled=bool(yaml_cfg.get("research", {}).get("enabled", True)),
+            schedule=str(yaml_cfg.get("research", {}).get("schedule", "30 9 * * *")),
+            max_findings_per_domain=int(
+                yaml_cfg.get("research", {}).get("max_findings_per_domain", 10)
+            ),
+            highlight_threshold=float(yaml_cfg.get("research", {}).get("highlight_threshold", 0.7)),
+            max_highlights=int(yaml_cfg.get("research", {}).get("max_highlights", 5)),
+            web_search_provider=str(
+                yaml_cfg.get("research", {}).get("web_search_provider", "tavily")
+            ),
+            report_style=str(yaml_cfg.get("research", {}).get("report_style", "standard")),
+        ),
         system_prompt=yaml_cfg.get("system_prompt", ""),
         memory=yaml_cfg.get("memory", {}),
         observability=yaml_cfg.get("observability", {}),
@@ -127,6 +154,10 @@ def get_settings() -> EmergentSettings:
 
     # Make API key available as env var for the anthropic client
     os.environ["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
+    if env.TAVILY_API_KEY:
+        os.environ["TAVILY_API_KEY"] = env.TAVILY_API_KEY
+    if env.GITHUB_TOKEN:
+        os.environ["GITHUB_TOKEN"] = env.GITHUB_TOKEN
 
     return settings
 
