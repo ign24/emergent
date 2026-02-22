@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 
 import structlog
@@ -20,6 +21,7 @@ from emergent.agent.runtime import AgentRuntime
 from emergent.config import EmergentSettings
 from emergent.memory.store import MemoryStore
 from emergent.memory.summarizer import summarize_conversation
+from emergent.observability.banner import ConsoleNotifier
 
 logger = structlog.get_logger(__name__)
 
@@ -57,11 +59,13 @@ class TelegramGateway:
         runtime: AgentRuntime,
         store: MemoryStore,
         context_builder: ContextBuilder,
+        notifier: ConsoleNotifier | None = None,
     ) -> None:
         self._settings = settings
         self._runtime = runtime
         self._store = store
         self._context_builder = context_builder
+        self._notifier = notifier
 
         # Auth whitelist — frozenset, immutable at runtime
         self._allowed_ids: frozenset[int] = frozenset(settings.telegram.allowed_user_ids)
@@ -131,6 +135,12 @@ class TelegramGateway:
         log = logger.bind(chat_id=chat_id, session_id=session_id)
         log.info("telegram_message_received", message_len=len(user_text))
 
+        if self._notifier:
+            user = message.from_user
+            username = (user.username or str(chat_id)) if user else str(chat_id)
+            preview = user_text[:30] + ("..." if len(user_text) > 30 else "")
+            self._notifier.message_received(username, preview, len(user_text))
+
         # Send typing indicator
         await self._bot.send_chat_action(chat_id=chat_id, action="typing")
 
@@ -170,6 +180,7 @@ class TelegramGateway:
                 command_preview=command_preview,
             )
 
+        t0 = time.monotonic()
         try:
             response_text, trace_data = await self._runtime.run(
                 user_message=user_text,
@@ -180,8 +191,14 @@ class TelegramGateway:
                 session_summary=summary,
                 confirm_callback=confirm_callback,
             )
+            if self._notifier:
+                duration = time.monotonic() - t0
+                tokens = trace_data.get("total_tokens", 0) if isinstance(trace_data, dict) else 0
+                self._notifier.message_sent(duration, tokens)
         except Exception as e:
             log.error("runtime_error", error=str(e))
+            if self._notifier:
+                self._notifier.error(str(e))
             response_text = "Ocurrió un error inesperado. Por favor, intentá de nuevo."
             trace_data = {}
 

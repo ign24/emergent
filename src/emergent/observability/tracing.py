@@ -36,8 +36,8 @@ def configure_logging(
     Args:
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR).
         log_format: 'json' for structured JSON (production) or 'console' for human-readable.
-        log_file: Optional path to write logs. Enables rotation at max_bytes with backup_count files.
-                  If None, logs go to stdout only.
+        log_file: Optional path to write logs. Enables rotation at max_bytes
+                  with backup_count files. If None, logs go to stdout only.
         max_bytes: Max size per log file before rotation (default 10MB).
         backup_count: Number of rotated files to keep (default 5).
     """
@@ -53,18 +53,27 @@ def configure_logging(
     if log_file:
         from pathlib import Path
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
-        handler: logging.Handler = logging.handlers.RotatingFileHandler(
+        # File handler: all logs at configured level, JSON format
+        file_handler: logging.Handler = logging.handlers.RotatingFileHandler(
             log_file,
             maxBytes=max_bytes,
             backupCount=backup_count,
             encoding="utf-8",
         )
+        file_handler.setLevel(level)
+        root_logger.addHandler(file_handler)
+
+        # Stdout handler: WARNING+ only so terminal stays clean
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler.setLevel(logging.WARNING)
+        root_logger.addHandler(stderr_handler)
     else:
         handler = logging.StreamHandler(sys.stdout)
+        handler.setLevel(level)
+        root_logger.addHandler(handler)
 
-    handler.setLevel(level)
-    root_logger.addHandler(handler)
-
+    # Always use JSON renderer — file logs need it, and stdout WARNING lines
+    # benefit from structured output too.
     processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.filter_by_level,
@@ -73,12 +82,8 @@ def configure_logging(
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
+        structlog.processors.JSONRenderer(),
     ]
-
-    if log_format == "json":
-        processors.append(structlog.processors.JSONRenderer())
-    else:
-        processors.append(structlog.dev.ConsoleRenderer(colors=True))
 
     structlog.configure(
         processors=processors,

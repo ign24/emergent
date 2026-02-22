@@ -19,24 +19,27 @@ async def _run() -> None:
     settings = get_settings()
     verify_guards_integrity(settings)
 
-    # Configure structlog
-    obs_cfg = settings.observability or {}
-    configure_logging(
-        log_level=obs_cfg.get("log_level", "INFO"),
-        log_format=obs_cfg.get("log_format", "console"),
-        log_file=obs_cfg.get("log_file"),  # None → stdout; set path in config.yaml for rotation
-    )
-
-    log = structlog.get_logger(__name__)
-    log.info("emergent_starting", version="0.1.0", model=settings.agent.model)
-
-    # Initialize data directory
+    # Initialize data directory (needed before configure_logging for log_file path)
     mem_cfg = settings.memory or {}
     data_dir = Path(settings.agent.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     db_path = data_dir / mem_cfg.get("sqlite_db", "emergent.db")
     chroma_dir = data_dir / mem_cfg.get("chroma_dir", "chroma")
     chroma_dir.mkdir(parents=True, exist_ok=True)
+
+    # Default log_file: data/logs/emergent.log (overridable via config)
+    obs_cfg = settings.observability or {}
+    log_file = obs_cfg.get("log_file") or str(data_dir / "logs" / "emergent.log")
+
+    # Configure structlog — file gets all logs, terminal only WARNING+
+    configure_logging(
+        log_level=obs_cfg.get("log_level", "INFO"),
+        log_format="json",
+        log_file=log_file,
+    )
+
+    log = structlog.get_logger(__name__)
+    log.info("emergent_starting", version="0.1.0", model=settings.agent.model)
 
     # Initialize components
     from emergent.agent.context import ContextBuilder
@@ -93,12 +96,17 @@ async def _run() -> None:
         registry=registry,
     )
 
+    # Console notifier for terminal activity lines
+    from emergent.observability.banner import ConsoleNotifier
+    notifier = ConsoleNotifier()
+
     # Telegram gateway
     gateway = TelegramGateway(
         settings=settings,
         runtime=runtime,
         store=store,
         context_builder=context_builder,
+        notifier=notifier,
     )
 
     # --- Cron callback: runs a prompt headlessly and notifies via Telegram ---
@@ -186,6 +194,7 @@ async def _run() -> None:
         chroma_dir=str(chroma_dir),
         allowed_users=len(settings.telegram.allowed_user_ids),
         scheduler_jobs=len(scheduler.get_jobs()),
+        log_file=log_file,
     )
 
     try:

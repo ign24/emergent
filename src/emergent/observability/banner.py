@@ -6,7 +6,7 @@ from rich.console import Console
 from rich.text import Text
 
 _LOGO = """\
- ███████╗███╗   ███╗███████╗██████╗  ██████╗ ███████╗███╗   ██╗████████╗
+ ███████╗███╗   ███╗███████╗██████╗  ██████╗ ███████╗███╗   ██╗████████╗✦ ✧
  ██╔════╝████╗ ████║██╔════╝██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝
  █████╗  ██╔████╔██║█████╗  ██████╔╝██║  ███╗█████╗  ██╔██╗ ██║   ██║
  ██╔══╝  ██║╚██╔╝██║██╔══╝  ██╔══██╗██║   ██║██╔══╝  ██║╚██╗██║   ██║
@@ -18,6 +18,7 @@ _ACCENT = "#7C3AED"   # violet
 _DIM    = "grey50"
 _OK     = "green"
 _RULE   = "grey30"
+_ERR    = "red"
 
 
 def print_banner(
@@ -27,6 +28,7 @@ def print_banner(
     chroma_dir: str,
     allowed_users: int,
     scheduler_jobs: int,
+    log_file: str | None = None,
 ) -> None:
     """Print the Emergent startup banner to stdout."""
     console = Console(highlight=False)
@@ -59,8 +61,11 @@ def print_banner(
 
     _row("SQLite WAL", db_path)
     _row("ChromaDB", chroma_dir)
-    _row("Telegram", f"polling  [{_DIM}]·[/]  {allowed_users} user{'s' if allowed_users != 1 else ''} authorized")
+    suffix = "s" if allowed_users != 1 else ""
+    _row("Telegram", f"polling  [{_DIM}]·[/]  {allowed_users} user{suffix} authorized")
     _row("Scheduler", f"{scheduler_jobs} jobs loaded")
+    if log_file:
+        _row("Logs", log_file)
 
     console.print()
 
@@ -68,3 +73,25 @@ def print_banner(
     console.rule(style=_RULE)
 
     console.print()
+
+
+class ConsoleNotifier:
+    """Prints brief activity lines to stderr so the terminal stays informative."""
+
+    def __init__(self) -> None:
+        self._console = Console(stderr=True, highlight=False)
+
+    def message_received(self, user: str, preview: str, length: int) -> None:
+        self._console.print(
+            f"  [{_DIM}]←[/] [{_ACCENT}]{user}[/][{_DIM}]:[/] "
+            f"[white]\"{preview}\"[/] [{_DIM}]({length} chars)[/]"
+        )
+
+    def message_sent(self, duration_secs: float, tokens: int) -> None:
+        self._console.print(
+            f"  [{_OK}]→[/] [{_DIM}]{duration_secs:.1f}s[/] "
+            f"[{_DIM}]·[/] [{_DIM}]{tokens:,} tokens[/]"
+        )
+
+    def error(self, msg: str) -> None:
+        self._console.print(f"  [{_ERR}]✗[/] [{_ERR}]error:[/] [{_DIM}]{msg}[/]")
