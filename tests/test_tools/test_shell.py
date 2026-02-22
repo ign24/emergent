@@ -35,6 +35,44 @@ class TestShellExecute:
         result = await shell_execute({"command": "sleep 5", "timeout_seconds": 1})
         assert "timed out" in result.lower() or "timeout" in result.lower()
 
+    async def test_timeout_kills_subprocess(self, monkeypatch):
+        import emergent.tools.shell as shell_module
+
+        class DummyProc:
+            def __init__(self) -> None:
+                self.killed = False
+                self.waited = False
+
+            async def communicate(self):
+                return b"", b""
+
+            def kill(self) -> None:
+                self.killed = True
+
+            async def wait(self) -> None:
+                self.waited = True
+
+        proc = DummyProc()
+
+        async def _fake_create_subprocess_shell(*args, **kwargs):
+            return proc
+
+        async def _fake_wait_for(awaitable, timeout):
+            awaitable.close()
+            raise TimeoutError
+
+        monkeypatch.setattr(
+            shell_module.asyncio,
+            "create_subprocess_shell",
+            _fake_create_subprocess_shell,
+        )
+        monkeypatch.setattr(shell_module.asyncio, "wait_for", _fake_wait_for)
+
+        await shell_execute({"command": "sleep 5", "timeout_seconds": 1})
+
+        assert proc.killed is True
+        assert proc.waited is True
+
     async def test_stderr_captured(self):
         result = await shell_execute({"command": "ls /nonexistent_path_xyz"})
         assert (

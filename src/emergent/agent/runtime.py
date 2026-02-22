@@ -85,6 +85,10 @@ class AgentRuntime:
         self._TIMEOUT_SESSION = settings.agent.TIMEOUT_SESSION_SECONDS
         self._MAX_OUTPUT_CHARS = settings.agent.MAX_TOOL_OUTPUT_CHARS
 
+    async def close(self) -> None:
+        """Close runtime resources (HTTP client connections)."""
+        await self._client.close()
+
     async def run(
         self,
         user_message: str,
@@ -264,7 +268,9 @@ class AgentRuntime:
         return response_text, trace_data
 
     @retry(
-        retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APITimeoutError)),
+        retry=retry_if_exception_type(
+            (anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APITimeoutError)
+        ),
         wait=wait_exponential(multiplier=1, min=1, max=30),
         stop=stop_after_attempt(3),
         reraise=True,

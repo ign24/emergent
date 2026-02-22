@@ -32,6 +32,7 @@ packages = ["src/emergent"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
+    "integration: integration tests for runtime/tool contracts",
     "e2e: end-to-end tests that call real LLM (budget-capped)",
     "security: red team / security tests",
     "expensive: tests with significant API cost",

@@ -1,4 +1,4 @@
-.PHONY: run test test-e2e test-security lint typecheck dashboard triage clean install
+.PHONY: run test test-unit test-integration test-e2e test-security lint typecheck dashboard triage clean install
 
 run:
 	uv run python -m emergent
@@ -7,7 +7,13 @@ install:
 	uv sync
 
 test:
-	uv run pytest tests/ -k "not e2e" -v
+	uv run pytest tests/ -m "not e2e and not expensive" -v
+
+test-unit:
+	uv run pytest tests/ -m "not integration and not e2e and not expensive" -v
+
+test-integration:
+	uv run pytest tests/ -m integration -v
 
 test-e2e:
 	uv run pytest tests/test_e2e/ -m "e2e and not expensive" -v

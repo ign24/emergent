@@ -140,6 +140,15 @@ emergent
 # Run tests
 make test
 
+# Run only unit layer
+make test-unit
+
+# Run integration layer
+make test-integration
+
+# Run live E2E smoke (requires ANTHROPIC_API_KEY)
+make test-e2e
+
 # View observability dashboard
 make dashboard
 
@@ -198,6 +207,27 @@ Send `/start` in Telegram to begin.
 **Memory:**
 > "Recordá que prefiero Python sobre JavaScript"
 > *(Stored in ChromaDB, retrieved in future sessions)*
+
+## Testing Pyramid
+
+- **Unit (`70-80%`)**: deterministic logic, offline, fast.
+- **Integration (`15-25%`)**: runtime contracts (agent + tools/memory), mostly mocked external APIs.
+- **E2E (`5-10%`)**: live Anthropic API smoke tests for critical journeys.
+
+Commands:
+
+```bash
+make test              # fast suite: unit + integration (no e2e/expensive)
+make test-unit         # only unit layer
+make test-integration  # only integration layer
+make test-e2e          # live e2e smoke (skips if ANTHROPIC_API_KEY missing)
+make test-security     # red team / security scenarios
+```
+
+CI gates:
+
+- Pull requests run: `test-unit` + `test-integration` + `test-security`.
+- Push to `main` (and manual dispatch) additionally runs live `test-e2e` when `ANTHROPIC_API_KEY` is configured in repository secrets.
 
 ## Running as a System Service
 
@@ -262,8 +292,10 @@ emergent/
 │       ├── tracing.py       # structlog JSON + log rotation
 │       └── metrics.py       # Dashboard + triage CLI
 ├── tests/
+│   ├── test_integration/
+│   │   └── test_agent_loop.py  # Agent loop contracts with mocked LLM transport
 │   ├── test_e2e/
-│   │   └── test_agent_loop.py  # 7 E2E integration tests
+│   │   └── test_agent_loop.py  # Live E2E smoke tests (real Anthropic API)
 │   ├── test_tools/
 │   │   ├── test_registry.py    # 54 safety classifier tests
 │   │   ├── test_security.py    # 16 red team tests

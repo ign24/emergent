@@ -40,6 +40,7 @@ async def shell_execute(tool_input: dict[str, Any]) -> str:
     log.info("shell_exec_start", timeout_seconds=timeout_seconds)
 
     start = time.monotonic()
+    proc: asyncio.subprocess.Process | None = None
     try:
         proc = await asyncio.create_subprocess_shell(
             command,
@@ -50,6 +51,12 @@ async def shell_execute(tool_input: dict[str, Any]) -> str:
             proc.communicate(), timeout=timeout_seconds
         )
     except TimeoutError:
+        if proc is not None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                log.warning("shell_exec_timeout_cleanup_failed")
         log.warning("shell_exec_timeout", timeout_seconds=timeout_seconds)
         return json.dumps(
             {
