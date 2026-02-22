@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field, field_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,8 +24,11 @@ class TelegramConfig:
 
 @dataclass
 class AgentConfig:
+    provider: str = "anthropic"
     model: str = "claude-sonnet-4-20250514"
     haiku_model: str = "claude-haiku-4-5-20251001"
+    summary_provider: str = "anthropic"
+    ollama_base_url: str = "http://127.0.0.1:11434"
     max_tokens: int = 4096
     data_dir: str = "./data"
 
@@ -47,13 +50,16 @@ class _EnvSettings(BaseSettings):
         extra="ignore",
     )
 
-    ANTHROPIC_API_KEY: str = Field(...)
+    ANTHROPIC_API_KEY: str = Field(default="")
     TELEGRAM_BOT_TOKEN: str = Field(default="")
     TELEGRAM_ALLOWED_USER_IDS: str = Field(default="")
 
     # Optional overrides
+    EMERGENT_PROVIDER: str = Field(default="")
     EMERGENT_MODEL: str = Field(default="")
     EMERGENT_HAIKU_MODEL: str = Field(default="")
+    EMERGENT_SUMMARY_PROVIDER: str = Field(default="")
+    EMERGENT_OLLAMA_BASE_URL: str = Field(default="")
     EMERGENT_DATA_DIR: str = Field(default="")
 
 
@@ -68,6 +74,7 @@ class EmergentSettings:
     memory: dict[str, Any] = field(default_factory=dict)
     observability: dict[str, Any] = field(default_factory=dict)
     tools_config: dict[str, Any] = field(default_factory=dict)
+    voice: dict[str, Any] = field(default_factory=dict)
 
 
 def _parse_user_ids(raw: str) -> list[int]:
@@ -84,7 +91,7 @@ def _load_yaml_config(path: Path) -> dict[str, Any]:
 @lru_cache
 def get_settings() -> EmergentSettings:
     """Load and cache settings. Called once at startup."""
-    env = _EnvSettings()  # type: ignore[call-arg]
+    env = _EnvSettings()
     yaml_cfg = _load_yaml_config(Path.cwd() / "config.yaml")
 
     agent_yaml = yaml_cfg.get("agent", {})
@@ -95,8 +102,14 @@ def get_settings() -> EmergentSettings:
     )
 
     agent = AgentConfig(
+        provider=env.EMERGENT_PROVIDER or agent_yaml.get("provider", "anthropic"),
         model=env.EMERGENT_MODEL or agent_yaml.get("model", "claude-sonnet-4-20250514"),
-        haiku_model=env.EMERGENT_HAIKU_MODEL or agent_yaml.get("haiku_model", "claude-haiku-4-5-20251001"),
+        haiku_model=env.EMERGENT_HAIKU_MODEL
+        or agent_yaml.get("haiku_model", "claude-haiku-4-5-20251001"),
+        summary_provider=env.EMERGENT_SUMMARY_PROVIDER
+        or agent_yaml.get("summary_provider", "anthropic"),
+        ollama_base_url=env.EMERGENT_OLLAMA_BASE_URL
+        or agent_yaml.get("ollama_base_url", "http://127.0.0.1:11434"),
         max_tokens=agent_yaml.get("max_tokens", 4096),
         data_dir=env.EMERGENT_DATA_DIR or agent_yaml.get("data_dir", "./data"),
     )
@@ -109,6 +122,7 @@ def get_settings() -> EmergentSettings:
         memory=yaml_cfg.get("memory", {}),
         observability=yaml_cfg.get("observability", {}),
         tools_config=yaml_cfg.get("tools", {}),
+        voice=yaml_cfg.get("voice", {}),
     )
 
     # Make API key available as env var for the anthropic client

@@ -33,3 +33,11 @@ class ConfirmationTimeoutError(EmergentError):
 
 class ConfirmationDeniedError(EmergentError):
     """Raised when user denies a TIER_2 confirmation."""
+
+
+class LLMProviderError(EmergentError):
+    """Raised when an LLM provider request fails."""
+
+
+class LLMRetryableError(LLMProviderError):
+    """Raised on transient LLM provider failures that can be retried."""

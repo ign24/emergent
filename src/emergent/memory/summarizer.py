@@ -1,11 +1,12 @@
-"""Auto-summarization of long conversations using Haiku."""
+"""Auto-summarization of long conversations using a provider-agnostic LLM."""
 
 from __future__ import annotations
 
 from typing import Any
 
-import anthropic
 import structlog
+
+from emergent.llm.client import LLMClient
 
 logger = structlog.get_logger(__name__)
 
@@ -15,9 +16,9 @@ MAX_RETRIES = 2
 
 
 async def summarize_conversation(
-    client: anthropic.AsyncAnthropic,
+    client: LLMClient,
     messages: list[dict[str, Any]],
-    haiku_model: str = "claude-haiku-4-5-20251001",
+    summary_model: str = "claude-haiku-4-5-20251001",
 ) -> str | None:
     """
     Summarize a conversation using Haiku (cheap compression).
@@ -47,17 +48,19 @@ async def summarize_conversation(
 
     for attempt in range(MAX_RETRIES + 1):
         try:
-            response = await client.messages.create(
-                model=haiku_model,
+            response = await client.complete(
+                model=summary_model,
                 system="Sos un asistente que crea resúmenes concisos de conversaciones.",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=300,
+                tools=None,
             )
 
             summary = ""
             for block in response.content:
-                if hasattr(block, "text"):
-                    summary = block.text.strip()
+                block_text = getattr(block, "text", None)
+                if isinstance(block_text, str):
+                    summary = block_text.strip()
                     break
 
             # Validate summary quality

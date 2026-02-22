@@ -1,11 +1,12 @@
 """AgentRuntime — Core agentic loop.
 
-Implements ReAct pattern using Claude's native tool_use.
+Implements ReAct pattern with provider-agnostic tool use.
 
 Loop:
     1. Build context (system prompt + memory + history + tool defs)
-    2. Call Claude API
-    3. If stop_reason == "tool_use": classify safety → execute/confirm/block → append result → goto 2
+    2. Call configured LLM provider API
+    3. If stop_reason == "tool_use": classify safety and execute/confirm/block tools
+       then append results and return to step 2
     4. If stop_reason == "end_turn": return text response
     5. Post-loop: persist conversation, emit traces, trigger summarization if needed
 
@@ -25,22 +26,18 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-import anthropic
 import structlog
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from emergent import (
     ContextOverflowError,
+    LLMProviderError,
+    LLMRetryableError,
     MaxIterationsError,
     SafetyViolationError,
 )
 from emergent.agent.prompts import DEFAULT_SYSTEM_PROMPT, build_system_prompt
 from emergent.config import EmergentSettings
+from emergent.llm.factory import create_llm_client
 
 if TYPE_CHECKING:
     from emergent.tools.registry import ToolRegistry
@@ -58,14 +55,16 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
 
 
 def _calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    pricing = MODEL_PRICING.get(model, {"input_per_mtok": 3.00, "output_per_mtok": 15.00})
+    pricing = MODEL_PRICING.get(model)
+    if pricing is None:
+        return 0.0
     return (
         input_tokens * pricing["input_per_mtok"] + output_tokens * pricing["output_per_mtok"]
     ) / 1_000_000
 
 
 class AgentRuntime:
-    """Core agentic loop using Claude's native tool_use."""
+    """Core agentic loop using provider-agnostic tool use."""
 
     def __init__(
         self,
@@ -76,7 +75,7 @@ class AgentRuntime:
         self._settings = settings
         self._registry = registry
         self._confirm_callback = confirm_callback
-        self._client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._client = create_llm_client(settings, settings.agent.provider)
 
         # Hardcoded guards
         self._MAX_ITERATIONS = settings.agent.MAX_ITERATIONS
@@ -153,16 +152,13 @@ class AgentRuntime:
                         tools_count=len(tool_defs),
                     )
 
-                    kwargs: dict[str, Any] = {
-                        "model": self._settings.agent.model,
-                        "system": built_system,
-                        "messages": messages,
-                        "max_tokens": self._settings.agent.max_tokens,
-                    }
-                    if tool_defs:
-                        kwargs["tools"] = tool_defs
-
-                    response = await self._call_with_retry(**kwargs)
+                    response = await self._call_with_retry(
+                        model=self._settings.agent.model,
+                        system=built_system,
+                        messages=messages,
+                        max_tokens=self._settings.agent.max_tokens,
+                        tools=tool_defs or None,
+                    )
 
                     call_duration_ms = (time.monotonic() - call_start) * 1000
                     total_input_tokens += response.usage.input_tokens
@@ -184,7 +180,7 @@ class AgentRuntime:
                     )
 
                     # Append assistant response to history
-                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append({"role": "assistant", "content": response.content_as_dicts()})
 
                     if response.stop_reason == "end_turn":
                         # Extract text from response
@@ -229,16 +225,21 @@ class AgentRuntime:
             log.error("max_iterations_hit", iterations=iterations)
         except ContextOverflowError as e:
             error_message = str(e)
-            response_text = "El contexto de la sesión es demasiado largo. Por favor, empezá una nueva conversación."
+            response_text = (
+                "El contexto de la sesión es demasiado largo. "
+                "Por favor, empezá una nueva conversación."
+            )
             log.error("context_overflow")
         except SafetyViolationError as e:
             error_message = str(e)
             response_text = f"Operación bloqueada por seguridad: {e}"
             log.warning("safety_violation_in_run", error=str(e))
-        except anthropic.APIError as e:
+        except LLMProviderError as e:
             error_message = f"API error: {e}"
-            response_text = "Hubo un error al comunicarme con Claude. Por favor, intentá de nuevo."
-            log.error("anthropic_api_error", error=str(e))
+            response_text = (
+                "Hubo un error al comunicarme con el proveedor LLM. Por favor, intentá de nuevo."
+            )
+            log.error("llm_api_error", error=str(e), provider=self._settings.agent.provider)
 
         session_duration_ms = (time.monotonic() - session_start) * 1000
         total_cost = _calculate_cost(
@@ -267,17 +268,17 @@ class AgentRuntime:
 
         return response_text, trace_data
 
-    @retry(
-        retry=retry_if_exception_type(
-            (anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APITimeoutError)
-        ),
-        wait=wait_exponential(multiplier=1, min=1, max=30),
-        stop=stop_after_attempt(3),
-        reraise=True,
-    )
     async def _call_with_retry(self, **kwargs: Any) -> Any:
-        """Call Claude API with automatic retry on transient errors."""
-        return await self._client.messages.create(**kwargs)
+        """Call LLM API with retry on transient provider errors."""
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                return await self._client.complete(**kwargs)
+            except LLMRetryableError:
+                if attempt >= attempts:
+                    raise
+                delay_seconds = min(2 ** (attempt - 1), 30)
+                await asyncio.sleep(delay_seconds)
 
     async def _handle_tool_calls(
         self,
@@ -323,7 +324,7 @@ class AgentRuntime:
                 *[self._execute_tool(b, trace_id, log) for b in tier1_blocks],
                 return_exceptions=True,
             )
-            for block, result in zip(tier1_blocks, results):
+            for block, result in zip(tier1_blocks, results, strict=False):
                 tools_called.append(block.name)
                 if isinstance(result, Exception):
                     tool_results.append(

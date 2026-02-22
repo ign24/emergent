@@ -1,10 +1,14 @@
-.PHONY: run test test-unit test-integration test-e2e test-security lint typecheck dashboard triage clean install
+.PHONY: run install update test test-unit test-integration test-e2e test-security lint typecheck dashboard triage clean
 
 run:
 	uv run python -m emergent
 
 install:
 	uv sync
+
+update:
+	git pull --ff-only
+	uv tool install . --reinstall
 
 test:
 	uv run pytest tests/ -m "not e2e and not expensive" -v

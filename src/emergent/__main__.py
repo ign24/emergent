@@ -98,10 +98,12 @@ async def _run() -> None:
 
     # Console notifier for terminal activity lines
     from emergent.observability.banner import ConsoleNotifier
+
     notifier = ConsoleNotifier()
 
     # Terminal channel (always created)
     from emergent.channels.terminal import TerminalChannel
+
     terminal = TerminalChannel(
         settings=settings,
         runtime=runtime,
@@ -120,6 +122,24 @@ async def _run() -> None:
             context_builder=context_builder,
             notifier=notifier,
         )
+
+    # Voice channel (optional, local-first push-to-talk)
+    voice_cfg = settings.voice or {}
+    voice_enabled = bool(voice_cfg.get("enabled", False))
+    voice_channel = None
+    if voice_enabled:
+        try:
+            from emergent.channels.voice import VoiceChannel
+
+            voice_channel = VoiceChannel(
+                settings=settings,
+                runtime=runtime,
+                store=store,
+                context_builder=context_builder,
+            )
+        except Exception as e:
+            log.error("voice_channel_init_failed", error=str(e))
+            voice_enabled = False
 
     # --- Cron callback: runs a prompt headlessly and notifies via Telegram ---
     async def _cron_run_callback(prompt: str) -> str:
@@ -186,6 +206,7 @@ async def _run() -> None:
         replace_existing=True,
     )
     scheduler.start()
+    terminal.set_scheduler_jobs(len(scheduler.get_jobs()))
     log.info("scheduler_started", persistent_db=db_url)
 
     # Graceful shutdown
@@ -202,8 +223,10 @@ async def _run() -> None:
     log.info("emergent_ready", allowed_users=len(settings.telegram.allowed_user_ids))
 
     from emergent.observability.banner import print_banner
+
     print_banner(
         version="0.1.0",
+        provider=settings.agent.provider,
         model=settings.agent.model,
         db_path=str(db_path),
         chroma_dir=str(chroma_dir),
@@ -211,6 +234,7 @@ async def _run() -> None:
         scheduler_jobs=len(scheduler.get_jobs()),
         log_file=log_file,
         telegram_enabled=telegram_enabled,
+        voice_enabled=voice_enabled,
     )
 
     try:
@@ -219,6 +243,8 @@ async def _run() -> None:
         ]
         if gateway is not None:
             tasks.append(asyncio.create_task(gateway.start(), name="telegram"))
+        if voice_channel is not None:
+            tasks.append(asyncio.create_task(voice_channel.start(), name="voice"))
         channel_tasks = tasks
 
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -233,6 +259,8 @@ async def _run() -> None:
         await terminal.stop()
         if gateway is not None:
             await gateway.stop()
+        if voice_channel is not None:
+            await voice_channel.stop()
         if scheduler.running:
             scheduler.shutdown(wait=False)
         await store.close()

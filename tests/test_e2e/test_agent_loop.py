@@ -19,12 +19,20 @@ def _require_api_key() -> str:
     return api_key
 
 
+def _provider() -> str:
+    return os.getenv("EMERGENT_E2E_PROVIDER", "anthropic").strip().lower()
+
+
 @pytest.mark.asyncio
 async def test_live_round_trip_text_response() -> None:
+    provider = _provider()
+    api_key = _require_api_key() if provider == "anthropic" else ""
     settings = EmergentSettings(
-        anthropic_api_key=_require_api_key(),
+        anthropic_api_key=api_key,
         agent=AgentConfig(
+            provider=provider,
             model=os.getenv("EMERGENT_E2E_MODEL", "claude-haiku-4-5-20251001"),
+            ollama_base_url=os.getenv("EMERGENT_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
             max_tokens=128,
         ),
     )
@@ -45,10 +53,14 @@ async def test_live_round_trip_text_response() -> None:
 @pytest.mark.asyncio
 @pytest.mark.expensive
 async def test_live_latency_budget_under_60s() -> None:
+    provider = _provider()
+    api_key = _require_api_key() if provider == "anthropic" else ""
     settings = EmergentSettings(
-        anthropic_api_key=_require_api_key(),
+        anthropic_api_key=api_key,
         agent=AgentConfig(
+            provider=provider,
             model=os.getenv("EMERGENT_E2E_MODEL", "claude-haiku-4-5-20251001"),
+            ollama_base_url=os.getenv("EMERGENT_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
             max_tokens=128,
         ),
     )

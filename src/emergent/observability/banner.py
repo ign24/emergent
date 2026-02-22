@@ -14,15 +14,16 @@ _LOGO = """\
  ╚══════╝╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝\
 """
 
-_ACCENT = "#7C3AED"   # violet
-_DIM    = "grey50"
-_OK     = "green"
-_RULE   = "grey30"
-_ERR    = "red"
+_ACCENT = "#7C3AED"  # violet
+_DIM = "grey50"
+_OK = "green"
+_RULE = "grey30"
+_ERR = "red"
 
 
 def print_banner(
     version: str,
+    provider: str,
     model: str,
     db_path: str,
     chroma_dir: str,
@@ -30,6 +31,7 @@ def print_banner(
     scheduler_jobs: int,
     log_file: str | None = None,
     telegram_enabled: bool = True,
+    voice_enabled: bool = False,
 ) -> None:
     """Print the Emergent startup banner to stdout."""
     console = Console(highlight=False)
@@ -47,7 +49,7 @@ def print_banner(
     console.print(
         f"  [bold white]v{version}[/]  "
         f"[{_DIM}]·[/]  "
-        f"[{_DIM}]{model}[/]  "
+        f"[{_DIM}]{provider}:{model}[/]  "
         f"[{_DIM}]·[/]  "
         f"[{_DIM}]local-first autonomous agent[/]"
     )
@@ -56,13 +58,13 @@ def print_banner(
 
     # Status indicators
     def _row(label: str, value: str) -> None:
-        console.print(
-            f"  [{_OK}]●[/]  [{_DIM}]{label:<14}[/]  [white]{value}[/]"
-        )
+        console.print(f"  [{_OK}]●[/]  [{_DIM}]{label:<14}[/]  [white]{value}[/]")
 
     _row("SQLite WAL", db_path)
     _row("ChromaDB", chroma_dir)
     _row("Terminal", f"interactive  [{_DIM}]·[/]  session=terminal_session")
+    if voice_enabled:
+        _row("Voice", "push-to-talk  [grey50]·[/]  session=voice_session")
     if telegram_enabled:
         suffix = "s" if allowed_users != 1 else ""
         _row("Telegram", f"polling  [{_DIM}]·[/]  {allowed_users} user{suffix} authorized")
@@ -87,7 +89,7 @@ class ConsoleNotifier:
     def message_received(self, user: str, preview: str, length: int) -> None:
         self._console.print(
             f"  [{_DIM}]←[/] [{_ACCENT}]{user}[/][{_DIM}]:[/] "
-            f"[white]\"{preview}\"[/] [{_DIM}]({length} chars)[/]"
+            f'[white]"{preview}"[/] [{_DIM}]({length} chars)[/]'
         )
 
     def message_sent(self, duration_secs: float, tokens: int) -> None:

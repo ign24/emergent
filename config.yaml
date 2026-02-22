@@ -2,8 +2,11 @@
 # Non-secret settings. Secrets go in .env
 
 agent:
+  provider: "anthropic"         # "anthropic" | "ollama"
   model: "claude-sonnet-4-20250514"
+  summary_provider: "anthropic" # "anthropic" | "ollama"
   haiku_model: "claude-haiku-4-5-20251001"
+  ollama_base_url: "http://127.0.0.1:11434"
   max_tokens: 4096
   # Guards — hardcoded, NOT overridable by the agent
   # These values are used by verify_guards_integrity() at startup
@@ -62,3 +65,29 @@ observability:
   alert_success_rate_critical: 0.75
   alert_p95_latency_critical: 60
   alert_cost_per_request_warning: 0.08
+
+voice:
+  enabled: false
+  # Global key name (keyboard lib): e.g. f24, f13, pause, or a single char like "v"
+  ptt_key: "f24"
+  # Optional: exact physical key by scan code (recommended for rare keys like volume)
+  # ptt_scan_code: 115
+  sample_rate: 16000
+  channels: 1
+  max_record_seconds: 15
+  stt_model: "small"
+  stt_device: "cpu"
+  stt_compute_type: "int8"
+  stt_language: "es"
+  tts_enabled: false
+  tts_command: "piper"
+  # Absolute path to Piper .onnx voice model
+  tts_model_path: ""
+  # Optional for multi-speaker models
+  # tts_speaker_id: 0
+  tts_length_scale: 1.0
+  tts_noise_scale: 0.667
+  tts_noise_w: 0.8
+  tts_sentence_silence: 0.15
+  tts_max_chars: 500
+  ui_beep: false

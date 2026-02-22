@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from emergent import LLMProviderError, LLMRetryableError
 from emergent.agent.runtime import AgentRuntime
 from emergent.config import AgentConfig, EmergentSettings
 
@@ -227,8 +228,6 @@ async def test_history_is_passed_to_llm() -> None:
 
 @pytest.mark.asyncio
 async def test_retry_on_rate_limit() -> None:
-    import anthropic
-
     settings = _make_settings()
     runtime = AgentRuntime(settings=settings)
     try:
@@ -238,14 +237,10 @@ async def test_retry_on_rate_limit() -> None:
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise anthropic.RateLimitError(
-                    message="rate limited",
-                    response=MagicMock(status_code=429, headers={}),
-                    body={},
-                )
+                raise LLMRetryableError("rate limited")
             return _make_text_response("Finalmente!")
 
-        with patch.object(runtime._client.messages, "create", new=_flaky):
+        with patch.object(runtime._client, "complete", new=_flaky):
             text, trace = await runtime.run(
                 user_message="Intentá",
                 session_id="test-session",
@@ -260,18 +255,12 @@ async def test_retry_on_rate_limit() -> None:
 
 @pytest.mark.asyncio
 async def test_api_error_returns_graceful_message() -> None:
-    import anthropic
-
     settings = _make_settings()
     runtime = AgentRuntime(settings=settings)
     try:
 
         async def _fail(**kwargs: Any) -> Any:
-            raise anthropic.APIError(
-                message="server exploded",
-                request=MagicMock(),
-                body={},
-            )
+            raise LLMProviderError("server exploded")
 
         with patch.object(runtime, "_call_with_retry", new=_fail):
             text, trace = await runtime.run(
@@ -280,7 +269,7 @@ async def test_api_error_returns_graceful_message() -> None:
             )
 
         assert trace["success"] is False
-        assert "error" in text.lower() or "claude" in text.lower()
+        assert "error" in text.lower() or "proveedor" in text.lower()
     finally:
         await runtime.close()
 
