@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import html
+import os
 import re
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 import structlog
 from aiogram import Bot, Dispatcher, Router
@@ -21,7 +23,7 @@ from aiogram.types import (
 
 from emergent.agent.context import ContextBuilder
 from emergent.agent.runtime import AgentRuntime
-from emergent.config import EmergentSettings
+from emergent.config import EmergentSettings, ModelTier
 from emergent.llm.factory import create_llm_client
 from emergent.memory.store import MemoryStore
 from emergent.memory.summarizer import summarize_conversation
@@ -59,6 +61,57 @@ class _StatusHandle:
     message_id: int | None
     last_text: str
     paused: bool = False
+
+
+@dataclass(frozen=True)
+class _SkillPreset:
+    name: str
+    description: str
+    instruction: str
+
+
+_DEFAULT_SKILL_PRESETS: dict[str, _SkillPreset] = {
+    "brainstorming": _SkillPreset(
+        name="brainstorming",
+        description="Explora opciones y trade-offs antes de implementar.",
+        instruction=(
+            "Actua en modo brainstorming. Antes de proponer implementacion, "
+            "presenta 2-3 enfoques con trade-offs y una recomendacion."
+        ),
+    ),
+    "debugger": _SkillPreset(
+        name="debugger",
+        description="Diagnostico sistematico de bugs y causa raiz.",
+        instruction=(
+            "Actua en modo debugger. Identifica sintomas, causa raiz probable, "
+            "pasos de reproduccion y fix minimo verificable."
+        ),
+    ),
+    "code-reviewer": _SkillPreset(
+        name="code-reviewer",
+        description="Review centrado en seguridad, performance y claridad.",
+        instruction=(
+            "Actua en modo code reviewer. Evalua riesgos de seguridad, performance, "
+            "mantenibilidad y sugiere mejoras accionables."
+        ),
+    ),
+    "technical-writer": _SkillPreset(
+        name="technical-writer",
+        description="Redaccion tecnica clara y estructurada.",
+        instruction=(
+            "Actua en modo technical writer. Responde con estructura clara, "
+            "lenguaje directo y ejemplos minimos cuando ayuden."
+        ),
+    ),
+    "api-design": _SkillPreset(
+        name="api-design",
+        description="Disena APIs REST claras y consistentes.",
+        instruction=(
+            "Actua en modo API design. Prioriza recursos bien nombrados, "
+            "status codes correctos, validaciones y errores consistentes."
+        ),
+    ),
+}
 
 
 def _split_message(text: str, max_len: int = MAX_MESSAGE_LENGTH) -> list[str]:
@@ -114,6 +167,7 @@ class TelegramGateway:
         store: MemoryStore,
         context_builder: ContextBuilder,
         notifier: ConsoleNotifier | None = None,
+        skill_dirs: list[Path] | None = None,
     ) -> None:
         self._settings = settings
         self._runtime = runtime
@@ -131,6 +185,9 @@ class TelegramGateway:
 
         # Map session_id per Telegram user (chat_id)
         self._sessions: dict[int, str] = {}
+        self._active_skill_by_chat: dict[int, str] = {}
+        self._skill_dirs = skill_dirs if skill_dirs is not None else self._default_skill_dirs()
+        self._available_skills = self._load_available_skills()
 
         self._setup_handlers()
 
@@ -185,15 +242,27 @@ class TelegramGateway:
         if not user_text.strip():
             return
 
+        command_result = await self._maybe_handle_local_command(message, user_text)
+        if command_result is None:
+            return
+
+        effective_user_text, skill_override = command_result
+
         session_id = await self._get_or_create_session(chat_id)
         log = logger.bind(chat_id=chat_id, session_id=session_id)
-        log.info("telegram_message_received", message_len=len(user_text))
+        log.info("telegram_message_received", message_len=len(effective_user_text))
+
+        runtime_user_text = self._build_runtime_message(
+            chat_id=chat_id,
+            user_text=effective_user_text,
+            skill_override=skill_override,
+        )
 
         if self._notifier:
             user = message.from_user
             username = (user.username or str(chat_id)) if user else str(chat_id)
-            preview = user_text[:30] + ("..." if len(user_text) > 30 else "")
-            self._notifier.message_received(username, preview, len(user_text))
+            preview = effective_user_text[:30] + ("..." if len(effective_user_text) > 30 else "")
+            self._notifier.message_received(username, preview, len(effective_user_text))
 
         status = await self._status_start(chat_id=chat_id, text=_STATUS_HISTORY_ACTIVATED)
         status_animation_task = asyncio.create_task(self._run_status_animation(status))
@@ -205,7 +274,7 @@ class TelegramGateway:
         try:
             profile_text, memories, summary, history = await self._context_builder.build_context(
                 session_id=session_id,
-                current_query=user_text,
+                current_query=effective_user_text,
             )
         except Exception as e:
             log.error("context_build_failed", error=str(e))
@@ -214,10 +283,11 @@ class TelegramGateway:
         # Check if summarization is needed
         if self._context_builder.should_summarize(history):
             try:
-                client = create_llm_client(self._settings, self._settings.agent.summary_provider)
+                summary_cfg = self._settings.agent.get_tier(ModelTier.SUMMARY)
+                client = create_llm_client(self._settings, summary_cfg.provider)
                 try:
                     new_summary = await summarize_conversation(
-                        client, history, summary_model=self._settings.agent.haiku_model
+                        client, history, summary_model=summary_cfg.model
                     )
                 finally:
                     await client.close()
@@ -242,7 +312,7 @@ class TelegramGateway:
         t0 = time.monotonic()
         try:
             response_text, trace_data = await self._runtime.run(
-                user_message=user_text,
+                user_message=runtime_user_text,
                 session_id=session_id,
                 history=history,
                 user_profile=profile_text,
@@ -267,7 +337,7 @@ class TelegramGateway:
 
         # Persist conversation
         try:
-            await self._store.save_conversation_turn(session_id, "user", user_text)
+            await self._store.save_conversation_turn(session_id, "user", effective_user_text)
             await self._store.save_conversation_turn(session_id, "assistant", response_text)
             await self._store.save_trace(trace_data)
         except Exception as e:
@@ -278,7 +348,7 @@ class TelegramGateway:
             self._context_builder._retriever.upsert_session(
                 session_id=session_id,
                 turns=[
-                    {"role": "user", "content": user_text},
+                    {"role": "user", "content": effective_user_text},
                     {"role": "assistant", "content": response_text},
                 ],
             )
@@ -287,6 +357,154 @@ class TelegramGateway:
         # Send response (with chunking if needed)
         await self._status_update(status, _STATUS_READY)
         await self._send_response(chat_id=chat_id, text=response_text)
+
+    async def _maybe_handle_local_command(
+        self,
+        message: Message,
+        user_text: str,
+    ) -> tuple[str, str | None] | None:
+        """Handle slash skill commands in Telegram."""
+        raw = user_text.strip()
+        if not raw.startswith("/"):
+            return user_text, None
+
+        self._refresh_available_skills()
+        lower = raw.lower()
+        chat_id = message.chat.id
+
+        if lower in {"/skills", "/skill"}:
+            await self._send_response(chat_id=chat_id, text=self._skills_help_text(chat_id))
+            return None
+
+        if lower.startswith("/skill "):
+            arg = raw.split(maxsplit=1)[1].strip().lower()
+            if arg in {"off", "none", "clear"}:
+                self._active_skill_by_chat.pop(chat_id, None)
+                await self._send_response(chat_id=chat_id, text="Skill mode desactivado.")
+                return None
+            if arg in self._available_skills:
+                self._active_skill_by_chat[chat_id] = arg
+                await self._send_response(chat_id=chat_id, text=f"Skill mode activado: `{arg}`")
+                return None
+            await self._send_response(chat_id=chat_id, text=f"Skill desconocida: `{arg}`")
+            await self._send_response(chat_id=chat_id, text=self._skills_help_text(chat_id))
+            return None
+
+        parts = raw.split(maxsplit=1)
+        command = parts[0][1:].lower()
+        if command in self._available_skills:
+            if len(parts) == 1 or not parts[1].strip():
+                await self._send_response(chat_id=chat_id, text=f"Uso: `/{command} <mensaje>`")
+                return None
+            return parts[1].strip(), command
+
+        return user_text, None
+
+    def _skills_help_text(self, chat_id: int) -> str:
+        """Build help text listing available skills and usage."""
+        active = self._active_skill_by_chat.get(chat_id, "none")
+        lines = ["## **Skills disponibles**", ""]
+        for skill_name in sorted(self._available_skills):
+            skill = self._available_skills[skill_name]
+            lines.append(f"- `/{skill.name}` - {skill.description}")
+
+        lines.extend(
+            [
+                "",
+                f"**Activa:** `{active}`",
+                "- ` /skill <name> ` modo persistente",
+                "- ` /skill off ` desactivar",
+                "- ` /<skill> <mensaje> ` one-shot",
+            ]
+        )
+        return "\n".join(lines)
+
+    def _build_runtime_message(
+        self,
+        chat_id: int,
+        user_text: str,
+        skill_override: str | None = None,
+    ) -> str:
+        """Wrap user message with active skill instructions when needed."""
+        chosen = skill_override or self._active_skill_by_chat.get(chat_id)
+        if chosen is None:
+            return user_text
+        preset = self._available_skills.get(chosen)
+        if preset is None:
+            return user_text
+        return (
+            f"[Skill activo: {preset.name}]\n"
+            f"{preset.instruction}\n\n"
+            f"Solicitud del usuario:\n{user_text}"
+        )
+
+    @staticmethod
+    def _default_skill_dirs() -> list[Path]:
+        configured = os.getenv("EMERGENT_SKILLS_DIR", "").strip()
+        candidates: list[Path] = []
+        if configured:
+            candidates.append(Path(configured).expanduser())
+        candidates.append(Path.home() / ".agents" / "skills")
+        candidates.append(Path.cwd() / ".agents" / "skills")
+        return candidates
+
+    def _refresh_available_skills(self) -> None:
+        self._available_skills = self._load_available_skills()
+        valid = set(self._available_skills)
+        self._active_skill_by_chat = {
+            chat_id: skill
+            for chat_id, skill in self._active_skill_by_chat.items()
+            if skill in valid
+        }
+
+    def _load_available_skills(self) -> dict[str, _SkillPreset]:
+        skills = dict(_DEFAULT_SKILL_PRESETS)
+
+        for skills_dir in self._skill_dirs:
+            if not skills_dir.exists() or not skills_dir.is_dir():
+                continue
+            for child in skills_dir.iterdir():
+                if not child.is_dir():
+                    continue
+                skill_file = child / "SKILL.md"
+                if not skill_file.exists():
+                    continue
+
+                name = child.name.strip().lower()
+                if not name or name in skills:
+                    continue
+
+                description = self._extract_skill_description(skill_file)
+                skills[name] = _SkillPreset(
+                    name=name,
+                    description=description or "Skill local instalada.",
+                    instruction=(
+                        f"Actua en modo {name}. Segui la skill local '{name}' "
+                        "y respeta su checklist/proceso antes de implementar."
+                    ),
+                )
+
+        return skills
+
+    @staticmethod
+    def _extract_skill_description(skill_file: Path) -> str | None:
+        try:
+            text = skill_file.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+        lines = text.splitlines()
+        if len(lines) < 3 or lines[0].strip() != "---":
+            return None
+
+        for line in lines[1:]:
+            if line.strip() == "---":
+                break
+            key, sep, value = line.partition(":")
+            if sep and key.strip() == "description":
+                return value.strip().strip('"').strip("'")
+
+        return None
 
     async def _request_tier2_confirmation(
         self,

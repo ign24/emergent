@@ -36,8 +36,9 @@ from emergent import (
     SafetyViolationError,
 )
 from emergent.agent.prompts import DEFAULT_SYSTEM_PROMPT, build_system_prompt
-from emergent.config import EmergentSettings
+from emergent.config import EmergentSettings, ModelTier, ModelTierConfig
 from emergent.llm.factory import create_llm_client
+from emergent.llm.router import ModelRouter
 
 if TYPE_CHECKING:
     from emergent.tools.registry import ToolRegistry
@@ -47,20 +48,14 @@ logger = structlog.get_logger(__name__)
 # Type alias for confirmation callback
 ConfirmCallback = Callable[[str, str], Awaitable[bool]]
 
-# Cost per million tokens (verify with context7 / anthropic pricing page)
-MODEL_PRICING: dict[str, dict[str, float]] = {
-    "claude-sonnet-4-20250514": {"input_per_mtok": 3.00, "output_per_mtok": 15.00},
-    "claude-haiku-4-5-20251001": {"input_per_mtok": 0.80, "output_per_mtok": 4.00},
-}
 
-
-def _calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    pricing = MODEL_PRICING.get(model)
-    if pricing is None:
-        return 0.0
-    return (
-        input_tokens * pricing["input_per_mtok"] + output_tokens * pricing["output_per_mtok"]
-    ) / 1_000_000
+def _calculate_cost(
+    input_per_mtok: float,
+    output_per_mtok: float,
+    input_tokens: int,
+    output_tokens: int,
+) -> float:
+    return (input_tokens * input_per_mtok + output_tokens * output_per_mtok) / 1_000_000
 
 
 class AgentRuntime:
@@ -75,7 +70,11 @@ class AgentRuntime:
         self._settings = settings
         self._registry = registry
         self._confirm_callback = confirm_callback
-        self._client = create_llm_client(settings, settings.agent.provider)
+        self._router = ModelRouter()
+        self._clients: dict[str, Any] = {}
+        self._selected_tier = ModelTier.DEFAULT
+        self._selected_model = settings.agent.get_tier(ModelTier.DEFAULT)
+        self._client = self._get_or_create_client(self._selected_model.provider)
 
         # Hardcoded guards
         self._MAX_ITERATIONS = settings.agent.MAX_ITERATIONS
@@ -86,7 +85,8 @@ class AgentRuntime:
 
     async def close(self) -> None:
         """Close runtime resources (HTTP client connections)."""
-        await self._client.close()
+        for client in self._clients.values():
+            await client.close()
 
     async def run(
         self,
@@ -109,6 +109,7 @@ class AgentRuntime:
         session_start = time.monotonic()
         total_input_tokens = 0
         total_output_tokens = 0
+        total_cost_usd = 0.0
         iterations = 0
         tools_called: list[str] = []
         error_message: str | None = None
@@ -131,6 +132,13 @@ class AgentRuntime:
         # Get tool definitions if registry is available
         tool_defs = self._registry.get_tool_definitions() if self._registry else []
 
+        selected_tier, selected_model_cfg, routing_reason = self._select_model_for_turn(
+            user_message=user_message,
+            history=history,
+        )
+        selected_provider = selected_model_cfg.provider
+        llm_client = self._get_or_create_client(selected_provider)
+
         response_text = ""
         try:
             async with asyncio.timeout(self._TIMEOUT_SESSION):
@@ -148,15 +156,20 @@ class AgentRuntime:
                     log.info(
                         "llm_call",
                         iteration=iterations,
+                        provider=selected_provider,
+                        model=selected_model_cfg.model,
+                        model_tier=selected_tier.value,
+                        routing_reason=routing_reason,
                         messages_count=len(messages),
                         tools_count=len(tool_defs),
                     )
 
                     response = await self._call_with_retry(
-                        model=self._settings.agent.model,
+                        client=llm_client,
+                        model=selected_model_cfg.model,
                         system=built_system,
                         messages=messages,
-                        max_tokens=self._settings.agent.max_tokens,
+                        max_tokens=selected_model_cfg.max_tokens,
                         tools=tool_defs or None,
                     )
 
@@ -164,15 +177,20 @@ class AgentRuntime:
                     total_input_tokens += response.usage.input_tokens
                     total_output_tokens += response.usage.output_tokens
                     cost_usd = _calculate_cost(
-                        self._settings.agent.model,
+                        selected_model_cfg.input_per_mtok,
+                        selected_model_cfg.output_per_mtok,
                         response.usage.input_tokens,
                         response.usage.output_tokens,
                     )
+                    total_cost_usd += cost_usd
 
                     log.info(
                         "llm_call_done",
                         iteration=iterations,
                         stop_reason=response.stop_reason,
+                        provider=selected_provider,
+                        model=selected_model_cfg.model,
+                        model_tier=selected_tier.value,
                         input_tokens=response.usage.input_tokens,
                         output_tokens=response.usage.output_tokens,
                         cost_usd=round(cost_usd, 6),
@@ -239,14 +257,9 @@ class AgentRuntime:
             response_text = (
                 "Hubo un error al comunicarme con el proveedor LLM. Por favor, intentá de nuevo."
             )
-            log.error("llm_api_error", error=str(e), provider=self._settings.agent.provider)
+            log.error("llm_api_error", error=str(e), provider=selected_provider)
 
         session_duration_ms = (time.monotonic() - session_start) * 1000
-        total_cost = _calculate_cost(
-            self._settings.agent.model,
-            total_input_tokens,
-            total_output_tokens,
-        )
 
         trace_data: dict[str, Any] = {
             "trace_id": trace_id,
@@ -254,7 +267,11 @@ class AgentRuntime:
             "iterations": iterations,
             "total_input_tokens": total_input_tokens,
             "total_output_tokens": total_output_tokens,
-            "total_cost_usd": round(total_cost, 6),
+            "total_cost_usd": round(total_cost_usd, 6),
+            "model_tier": selected_tier.value,
+            "provider": selected_provider,
+            "model": selected_model_cfg.model,
+            "routing_reason": routing_reason,
             "duration_ms": round(session_duration_ms),
             "tools_called": tools_called,
             "success": error_message is None,
@@ -268,17 +285,56 @@ class AgentRuntime:
 
         return response_text, trace_data
 
-    async def _call_with_retry(self, **kwargs: Any) -> Any:
+    async def _call_with_retry(self, *, client: Any, **kwargs: Any) -> Any:
         """Call LLM API with retry on transient provider errors."""
         attempts = 3
         for attempt in range(1, attempts + 1):
             try:
-                return await self._client.complete(**kwargs)
+                return await client.complete(**kwargs)
             except LLMRetryableError:
                 if attempt >= attempts:
                     raise
                 delay_seconds = min(2 ** (attempt - 1), 30)
                 await asyncio.sleep(delay_seconds)
+
+    def _get_or_create_client(self, provider: str) -> Any:
+        key = provider.strip().lower()
+        client = self._clients.get(key)
+        if client is not None:
+            return client
+        client = create_llm_client(self._settings, key)
+        self._clients[key] = client
+        return client
+
+    def _select_model_for_turn(
+        self,
+        *,
+        user_message: str,
+        history: list[dict[str, Any]] | None,
+    ) -> tuple[ModelTier, ModelTierConfig, str]:
+        turn_count = len(history or [])
+        has_tier2_tools = self._registry_has_tier2_or_higher()
+        decision = self._router.decide(
+            user_message=user_message,
+            turn_count=turn_count,
+            has_tier2_tools=has_tier2_tools,
+            routing_enabled=self._settings.agent.routing_enabled,
+        )
+        model_cfg = self._settings.agent.get_tier(decision.tier)
+        self._selected_tier = decision.tier
+        self._selected_model = model_cfg
+        return decision.tier, model_cfg, decision.reason
+
+    def _registry_has_tier2_or_higher(self) -> bool:
+        if self._registry is None:
+            return False
+        from emergent.tools.registry import SafetyTier
+
+        tools = getattr(self._registry, "_tools", {})
+        for tool in tools.values():
+            if tool.safety_tier in (SafetyTier.TIER_2_CONFIRM, SafetyTier.TIER_3_BLOCKED):
+                return True
+        return False
 
     async def _handle_tool_calls(
         self,

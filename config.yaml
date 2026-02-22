@@ -2,12 +2,49 @@
 # Non-secret settings. Secrets go in .env
 
 agent:
-  provider: "anthropic"         # "anthropic" | "ollama"
-  model: "claude-sonnet-4-20250514"
-  summary_provider: "anthropic" # "anthropic" | "ollama"
-  haiku_model: "claude-haiku-4-5-20251001"
-  ollama_base_url: "http://127.0.0.1:11434"
-  max_tokens: 4096
+  # Provider registry (non-secret; API keys come from .env)
+  providers:
+    anthropic:
+      api_key_env: "ANTHROPIC_API_KEY"
+    openrouter:
+      api_key_env: "OPENROUTER_API_KEY"
+      base_url: "https://openrouter.ai/api/v1"
+    ollama:
+      base_url: "http://127.0.0.1:11434"
+
+  # Routing toggle. If false, runtime always uses models.default
+  routing_enabled: true
+
+  # Model tiers used by runtime routing
+  models:
+    fast:
+      provider: "anthropic"
+      model: "claude-haiku-4-5-20251001"
+      max_tokens: 2048
+      input_per_mtok: 1.0
+      output_per_mtok: 5.0
+
+    default:
+      provider: "anthropic"
+      model: "claude-haiku-4-5-20251001"
+      max_tokens: 4096
+      input_per_mtok: 1.0
+      output_per_mtok: 5.0
+
+    strong:
+      provider: "anthropic"
+      model: "claude-sonnet-4-6"
+      max_tokens: 8192
+      input_per_mtok: 3.0
+      output_per_mtok: 15.0
+
+    summary:
+      provider: "ollama"
+      model: "qwen2.5:7b"
+      max_tokens: 300
+      input_per_mtok: 0.0
+      output_per_mtok: 0.0
+
   # Guards — hardcoded, NOT overridable by the agent
   # These values are used by verify_guards_integrity() at startup
   max_iterations: 15

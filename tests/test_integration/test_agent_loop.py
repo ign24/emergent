@@ -9,15 +9,49 @@ import pytest
 
 from emergent import LLMProviderError, LLMRetryableError
 from emergent.agent.runtime import AgentRuntime
-from emergent.config import AgentConfig, EmergentSettings
+from emergent.config import (
+    AgentConfig,
+    EmergentSettings,
+    ModelTier,
+    ModelTierConfig,
+    ProviderConfig,
+)
 
 pytestmark = pytest.mark.integration
 
 
 def _make_settings() -> EmergentSettings:
+    agent = AgentConfig(
+        providers={
+            "anthropic": ProviderConfig(api_key_env="ANTHROPIC_API_KEY"),
+            "ollama": ProviderConfig(base_url="http://127.0.0.1:11434"),
+        },
+        models={
+            ModelTier.DEFAULT.value: ModelTierConfig(
+                provider="anthropic",
+                model="claude-sonnet-4-20250514",
+                max_tokens=1024,
+            ),
+            ModelTier.FAST.value: ModelTierConfig(
+                provider="anthropic",
+                model="claude-haiku-4-5-20251001",
+                max_tokens=512,
+            ),
+            ModelTier.STRONG.value: ModelTierConfig(
+                provider="anthropic",
+                model="claude-sonnet-4-20250514",
+                max_tokens=2048,
+            ),
+            ModelTier.SUMMARY.value: ModelTierConfig(
+                provider="anthropic",
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+            ),
+        },
+    )
     return EmergentSettings(
         anthropic_api_key="sk-test-key",
-        agent=AgentConfig(model="claude-sonnet-4-20250514", max_tokens=1024),
+        agent=agent,
     )
 
 
@@ -277,7 +311,8 @@ async def test_api_error_returns_graceful_message() -> None:
 @pytest.mark.asyncio
 async def test_runtime_close_closes_http_client() -> None:
     runtime = AgentRuntime(settings=_make_settings())
-    runtime._client.close = AsyncMock()  # type: ignore[method-assign]
+    runtime._clients = {"anthropic": AsyncMock()}  # type: ignore[assignment]
+    runtime._client = runtime._clients["anthropic"]
 
     await runtime.close()
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -30,6 +31,27 @@ def _build_gateway() -> TelegramGateway:
         runtime=runtime,
         store=store,
         context_builder=context_builder,
+    )
+
+
+def _build_gateway_with_skill_dirs(skill_dirs: list[Path]) -> TelegramGateway:
+    settings = EmergentSettings(
+        telegram=TelegramConfig(bot_token="123456:ABCDEF", allowed_user_ids=[1]),
+    )
+    runtime = AsyncMock()
+    store = AsyncMock()
+    retriever = AsyncMock()
+    retriever.upsert_session = AsyncMock()
+    context_builder = AsyncMock()
+    context_builder._retriever = retriever
+    context_builder.build_context = AsyncMock(return_value=(None, None, None, []))
+    context_builder.should_summarize = lambda history: False
+    return TelegramGateway(
+        settings=settings,
+        runtime=runtime,
+        store=store,
+        context_builder=context_builder,
+        skill_dirs=skill_dirs,
     )
 
 
@@ -93,3 +115,33 @@ def test_format_chunk_for_telegram_converts_markdown_like_syntax() -> None:
     assert "<b>Herramientas</b>" in formatted
     assert "<b>Bold</b>" in formatted
     assert "<code>code</code>" in formatted
+
+
+@pytest.mark.asyncio
+async def test_skill_command_sets_persistent_skill_for_chat() -> None:
+    gateway = _build_gateway()
+    gateway._send_response = AsyncMock(return_value=None)
+    message = SimpleNamespace(chat=SimpleNamespace(id=1))
+
+    result = await gateway._maybe_handle_local_command(cast(Any, message), "/skill debugger")
+
+    assert result is None
+    assert gateway._active_skill_by_chat[1] == "debugger"
+    assert gateway._send_response.await_count >= 1
+
+
+def test_dynamic_skill_discovery_from_filesystem(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    custom_dir = skills_dir / "my-custom-skill"
+    custom_dir.mkdir(parents=True)
+    (custom_dir / "SKILL.md").write_text(
+        '---\nname: my-custom-skill\ndescription: "Skill personalizada de prueba."\n---\n',
+        encoding="utf-8",
+    )
+
+    gateway = _build_gateway_with_skill_dirs([skills_dir])
+
+    assert "my-custom-skill" in gateway._available_skills
+    assert (
+        gateway._available_skills["my-custom-skill"].description == "Skill personalizada de prueba."
+    )

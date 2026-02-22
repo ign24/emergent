@@ -3,6 +3,7 @@
 from emergent.llm.client import LLMClient
 from emergent.llm.factory import create_llm_client
 from emergent.llm.models import LLMResponse, LLMTextBlock, LLMToolUseBlock, LLMUsage
+from emergent.llm.router import ModelRouter, RoutingDecision
 
 __all__ = [
     "LLMClient",
@@ -10,5 +11,7 @@ __all__ = [
     "LLMTextBlock",
     "LLMToolUseBlock",
     "LLMUsage",
+    "ModelRouter",
+    "RoutingDecision",
     "create_llm_client",
 ]

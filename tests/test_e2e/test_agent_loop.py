@@ -7,7 +7,13 @@ import os
 import pytest
 
 from emergent.agent.runtime import AgentRuntime
-from emergent.config import AgentConfig, EmergentSettings
+from emergent.config import (
+    AgentConfig,
+    EmergentSettings,
+    ModelTier,
+    ModelTierConfig,
+    ProviderConfig,
+)
 
 pytestmark = pytest.mark.e2e
 
@@ -27,14 +33,35 @@ def _provider() -> str:
 async def test_live_round_trip_text_response() -> None:
     provider = _provider()
     api_key = _require_api_key() if provider == "anthropic" else ""
+    selected_model = os.getenv("EMERGENT_E2E_MODEL", "claude-haiku-4-5-20251001")
+    agent = AgentConfig(
+        providers={
+            "anthropic": ProviderConfig(api_key_env="ANTHROPIC_API_KEY"),
+            "ollama": ProviderConfig(
+                base_url=os.getenv("EMERGENT_OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+            ),
+        },
+        models={
+            ModelTier.DEFAULT.value: ModelTierConfig(
+                provider=provider,
+                model=selected_model,
+                max_tokens=128,
+            ),
+            ModelTier.FAST.value: ModelTierConfig(
+                provider=provider, model=selected_model, max_tokens=128
+            ),
+            ModelTier.STRONG.value: ModelTierConfig(
+                provider=provider, model=selected_model, max_tokens=128
+            ),
+            ModelTier.SUMMARY.value: ModelTierConfig(
+                provider=provider, model=selected_model, max_tokens=128
+            ),
+        },
+        routing_enabled=False,
+    )
     settings = EmergentSettings(
         anthropic_api_key=api_key,
-        agent=AgentConfig(
-            provider=provider,
-            model=os.getenv("EMERGENT_E2E_MODEL", "claude-haiku-4-5-20251001"),
-            ollama_base_url=os.getenv("EMERGENT_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-            max_tokens=128,
-        ),
+        agent=agent,
     )
     runtime = AgentRuntime(settings=settings)
     try:
@@ -55,14 +82,35 @@ async def test_live_round_trip_text_response() -> None:
 async def test_live_latency_budget_under_60s() -> None:
     provider = _provider()
     api_key = _require_api_key() if provider == "anthropic" else ""
+    selected_model = os.getenv("EMERGENT_E2E_MODEL", "claude-haiku-4-5-20251001")
+    agent = AgentConfig(
+        providers={
+            "anthropic": ProviderConfig(api_key_env="ANTHROPIC_API_KEY"),
+            "ollama": ProviderConfig(
+                base_url=os.getenv("EMERGENT_OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+            ),
+        },
+        models={
+            ModelTier.DEFAULT.value: ModelTierConfig(
+                provider=provider,
+                model=selected_model,
+                max_tokens=128,
+            ),
+            ModelTier.FAST.value: ModelTierConfig(
+                provider=provider, model=selected_model, max_tokens=128
+            ),
+            ModelTier.STRONG.value: ModelTierConfig(
+                provider=provider, model=selected_model, max_tokens=128
+            ),
+            ModelTier.SUMMARY.value: ModelTierConfig(
+                provider=provider, model=selected_model, max_tokens=128
+            ),
+        },
+        routing_enabled=False,
+    )
     settings = EmergentSettings(
         anthropic_api_key=api_key,
-        agent=AgentConfig(
-            provider=provider,
-            model=os.getenv("EMERGENT_E2E_MODEL", "claude-haiku-4-5-20251001"),
-            ollama_base_url=os.getenv("EMERGENT_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-            max_tokens=128,
-        ),
+        agent=agent,
     )
     runtime = AgentRuntime(settings=settings)
     try:

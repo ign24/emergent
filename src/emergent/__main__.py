@@ -39,7 +39,10 @@ async def _run() -> None:
     )
 
     log = structlog.get_logger(__name__)
-    log.info("emergent_starting", version="0.1.0", model=settings.agent.model)
+    llm_mode = "AUTO" if settings.agent.routing_enabled else "FIXED"
+    default_tier = settings.agent.default_model
+    model_label = f"{llm_mode} ({default_tier.provider}:{default_tier.model})"
+    log.info("emergent_starting", version="0.1.0", model=model_label)
 
     # Initialize components
     from emergent.agent.context import ContextBuilder
@@ -226,8 +229,7 @@ async def _run() -> None:
 
     print_banner(
         version="0.1.0",
-        provider=settings.agent.provider,
-        model=settings.agent.model,
+        model_label=model_label,
         db_path=str(db_path),
         chroma_dir=str(chroma_dir),
         allowed_users=len(settings.telegram.allowed_user_ids),

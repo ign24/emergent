@@ -23,8 +23,7 @@ _ERR = "red"
 
 def print_banner(
     version: str,
-    provider: str,
-    model: str,
+    model_label: str,
     db_path: str,
     chroma_dir: str,
     allowed_users: int,
@@ -49,7 +48,7 @@ def print_banner(
     console.print(
         f"  [bold white]v{version}[/]  "
         f"[{_DIM}]·[/]  "
-        f"[{_DIM}]{provider}:{model}[/]  "
+        f"[{_DIM}]{model_label}[/]  "
         f"[{_DIM}]·[/]  "
         f"[{_DIM}]local-first autonomous agent[/]"
     )

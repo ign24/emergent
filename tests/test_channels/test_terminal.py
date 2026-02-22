@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -26,6 +27,25 @@ def _build_channel() -> TerminalChannel:
         runtime=runtime,
         store=store,
         context_builder=context_builder,
+    )
+
+
+def _build_channel_with_skill_dirs(skill_dirs: list[Path]) -> TerminalChannel:
+    settings = EmergentSettings()
+    runtime = AsyncMock()
+    store = AsyncMock()
+    retriever = AsyncMock()
+    retriever.upsert_session = AsyncMock()
+    context_builder = AsyncMock()
+    context_builder._retriever = retriever
+    context_builder.build_context = AsyncMock(return_value=(None, None, None, []))
+    context_builder.should_summarize = lambda history: False
+    return TerminalChannel(
+        settings=settings,
+        runtime=runtime,
+        store=store,
+        context_builder=context_builder,
+        skill_dirs=skill_dirs,
     )
 
 
@@ -70,6 +90,8 @@ def test_live_panel_renders_key_metrics() -> None:
     assert "7" in rendered
     assert "tokens" in rendered
     assert "100" in rendered
+    assert "llm" in rendered
+    assert "AUTO" in rendered
 
 
 def test_live_panel_includes_scheduler_jobs() -> None:
@@ -103,6 +125,7 @@ async def test_local_skill_command_oneshot_executes_wrapped_prompt() -> None:
     consumed = await channel._handle_local_command("/brainstorming mejorar onboarding")
 
     assert consumed is True
+    assert channel._runtime.run.await_args is not None
     sent = channel._runtime.run.await_args.kwargs["user_message"]
     assert "Skill activo: brainstorming" in sent
     assert "mejorar onboarding" in sent
@@ -117,3 +140,20 @@ async def test_local_skill_persistent_mode_changes_active_skill() -> None:
 
     assert consumed is True
     assert channel._active_skill == "debugger"
+
+
+def test_dynamic_skill_discovery_from_filesystem(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    custom_dir = skills_dir / "my-custom-skill"
+    custom_dir.mkdir(parents=True)
+    (custom_dir / "SKILL.md").write_text(
+        '---\nname: my-custom-skill\ndescription: "Skill personalizada de prueba."\n---\n',
+        encoding="utf-8",
+    )
+
+    channel = _build_channel_with_skill_dirs([skills_dir])
+
+    assert "my-custom-skill" in channel._available_skills
+    assert (
+        channel._available_skills["my-custom-skill"].description == "Skill personalizada de prueba."
+    )

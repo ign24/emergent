@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from statistics import mean
 from typing import Any
 
@@ -17,7 +19,7 @@ from rich.table import Table
 
 from emergent.agent.context import ContextBuilder
 from emergent.agent.runtime import AgentRuntime
-from emergent.config import EmergentSettings
+from emergent.config import EmergentSettings, ModelTier
 from emergent.llm.factory import create_llm_client
 from emergent.memory.store import MemoryStore
 from emergent.memory.summarizer import summarize_conversation
@@ -39,7 +41,7 @@ class _SkillPreset:
     instruction: str
 
 
-_SKILL_PRESETS: dict[str, _SkillPreset] = {
+_DEFAULT_SKILL_PRESETS: dict[str, _SkillPreset] = {
     "brainstorming": _SkillPreset(
         name="brainstorming",
         description="Explora opciones y trade-offs antes de implementar.",
@@ -94,6 +96,9 @@ class _SessionStats:
     latencies_s: list[float] | None = None
     last_latency_s: float = 0.0
     last_tokens: int = 0
+    model_mode: str = "AUTO"
+    last_model_tier: str = "-"
+    last_model_name: str = "-"
 
     def __post_init__(self) -> None:
         if self.latencies_s is None:
@@ -110,6 +115,7 @@ class TerminalChannel:
         store: MemoryStore,
         context_builder: ContextBuilder,
         scheduler_jobs: int = 0,
+        skill_dirs: list[Path] | None = None,
     ) -> None:
         self._settings = settings
         self._runtime = runtime
@@ -122,7 +128,10 @@ class TerminalChannel:
         self._scheduler_jobs = max(0, scheduler_jobs)
         self._pending_escape_presses = 0
         self._active_skill: str | None = None
+        self._skill_dirs = skill_dirs if skill_dirs is not None else self._default_skill_dirs()
+        self._available_skills = self._load_available_skills()
         self._stats = _SessionStats(started_at_monotonic=time.monotonic())
+        self._stats.model_mode = "AUTO" if settings.agent.routing_enabled else "FIXED"
 
         # Exposed fields used by tests and quick introspection
         self._user_turns = 0
@@ -203,10 +212,11 @@ class TerminalChannel:
         # Auto-summarization if needed
         if self._context_builder.should_summarize(history):
             try:
-                client = create_llm_client(self._settings, self._settings.agent.summary_provider)
+                summary_cfg = self._settings.agent.get_tier(ModelTier.SUMMARY)
+                client = create_llm_client(self._settings, summary_cfg.provider)
                 try:
                     new_summary = await summarize_conversation(
-                        client, history, summary_model=self._settings.agent.haiku_model
+                        client, history, summary_model=summary_cfg.model
                     )
                 finally:
                     await client.close()
@@ -268,7 +278,11 @@ class TerminalChannel:
         # Render response in a clean transcript style
         self._console.print("assistant ›")
         self._console.print(Markdown(response_text))
-        self._console.print(f"  [{_DIM}]\u21b3 {elapsed:.1f}s \u00b7 {tokens:,} tokens[/]\n")
+        self._console.print(
+            f"  [{_DIM}]\u21b3 {elapsed:.1f}s \u00b7 {tokens:,} tokens \u00b7 "
+            f"{self._stats.model_mode}:{self._stats.last_model_tier} \u00b7 "
+            f"{self._stats.last_model_name}[/]\n"
+        )
 
     def _extract_total_tokens(self, trace_data: Any) -> int:
         """Get total tokens from trace payload (backward compatible)."""
@@ -298,6 +312,14 @@ class TerminalChannel:
             if isinstance(tools_called, list):
                 self._stats.tool_calls += len(tools_called)
 
+            model_tier = trace_data.get("model_tier")
+            if isinstance(model_tier, str) and model_tier:
+                self._stats.last_model_tier = model_tier
+
+            model_name = trace_data.get("model")
+            if isinstance(model_name, str) and model_name:
+                self._stats.last_model_name = model_name
+
         self._sync_stat_fields()
 
     def _sync_stat_fields(self) -> None:
@@ -321,6 +343,8 @@ class TerminalChannel:
         if not raw.startswith("/"):
             return False
 
+        self._refresh_available_skills()
+
         lower = raw.lower()
         if lower in {"/skills", "/skill"}:
             self._print_skills_help()
@@ -332,7 +356,7 @@ class TerminalChannel:
                 self._active_skill = None
                 self._console.print(f"  [{_DIM}]Skill mode disabled.[/]")
                 return True
-            if arg in _SKILL_PRESETS:
+            if arg in self._available_skills:
                 self._active_skill = arg
                 self._console.print(f"  [{_DIM}]Skill mode enabled:[/] [white]{arg}[/]")
                 return True
@@ -342,7 +366,7 @@ class TerminalChannel:
 
         parts = raw.split(maxsplit=1)
         command = parts[0][1:].lower()
-        if command in _SKILL_PRESETS:
+        if command in self._available_skills:
             if len(parts) == 1 or not parts[1].strip():
                 self._console.print(f"  [{_DIM}]Usage:[/] /{command} <mensaje>")
                 return True
@@ -356,7 +380,8 @@ class TerminalChannel:
         table = Table(show_header=True, header_style="bold", expand=False)
         table.add_column("skill")
         table.add_column("descripcion")
-        for skill in _SKILL_PRESETS.values():
+        for skill_name in sorted(self._available_skills):
+            skill = self._available_skills[skill_name]
             table.add_row(f"/{skill.name}", skill.description)
 
         self._console.print(table)
@@ -372,7 +397,7 @@ class TerminalChannel:
         chosen = skill_override or self._active_skill
         if chosen is None:
             return user_text
-        preset = _SKILL_PRESETS.get(chosen)
+        preset = self._available_skills.get(chosen)
         if preset is None:
             return user_text
         return (
@@ -380,6 +405,76 @@ class TerminalChannel:
             f"{preset.instruction}\n\n"
             f"Solicitud del usuario:\n{user_text}"
         )
+
+    @staticmethod
+    def _default_skill_dirs() -> list[Path]:
+        """Return ordered directories where local skills can exist."""
+        configured = os.getenv("EMERGENT_SKILLS_DIR", "").strip()
+        candidates: list[Path] = []
+        if configured:
+            candidates.append(Path(configured).expanduser())
+        candidates.append(Path.home() / ".agents" / "skills")
+        candidates.append(Path.cwd() / ".agents" / "skills")
+        return candidates
+
+    def _refresh_available_skills(self) -> None:
+        """Reload local skills list and keep active skill valid."""
+        self._available_skills = self._load_available_skills()
+        if self._active_skill and self._active_skill not in self._available_skills:
+            self._active_skill = None
+
+    def _load_available_skills(self) -> dict[str, _SkillPreset]:
+        """Load built-in and filesystem-discovered skills."""
+        skills = dict(_DEFAULT_SKILL_PRESETS)
+
+        for skills_dir in self._skill_dirs:
+            if not skills_dir.exists() or not skills_dir.is_dir():
+                continue
+            for child in skills_dir.iterdir():
+                if not child.is_dir():
+                    continue
+                skill_file = child / "SKILL.md"
+                if not skill_file.exists():
+                    continue
+
+                name = child.name.strip().lower()
+                if not name:
+                    continue
+                description = self._extract_skill_description(skill_file)
+                if name in skills:
+                    continue
+
+                skills[name] = _SkillPreset(
+                    name=name,
+                    description=description or "Skill local instalada.",
+                    instruction=(
+                        f"Actua en modo {name}. Segui la skill local '{name}' "
+                        "y respeta su checklist/proceso antes de implementar."
+                    ),
+                )
+
+        return skills
+
+    @staticmethod
+    def _extract_skill_description(skill_file: Path) -> str | None:
+        """Read description from SKILL.md frontmatter when available."""
+        try:
+            text = skill_file.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+        lines = text.splitlines()
+        if len(lines) < 3 or lines[0].strip() != "---":
+            return None
+
+        for line in lines[1:]:
+            if line.strip() == "---":
+                break
+            key, sep, value = line.partition(":")
+            if sep and key.strip() == "description":
+                return value.strip().strip('"').strip("'")
+
+        return None
 
     def _register_escape_press(self, text: str) -> bool:
         """Exit when escape is submitted twice in a row."""
@@ -405,6 +500,7 @@ class TerminalChannel:
         table.add_column(justify="left")
         table.add_column(justify="left")
         table.add_column(justify="left")
+        table.add_column(justify="left")
         table.add_row(
             f"[bold]jobs[/] {self._scheduler_jobs}",
             f"[bold]turnos[/] {self._stats.user_turns}/{self._stats.assistant_turns}",
@@ -412,6 +508,8 @@ class TerminalChannel:
             f"[bold]tools[/] {self._stats.tool_calls}",
             f"[bold]lat[/] {avg_latency:.1f}s · [bold]up[/] {uptime_s:.0f}s",
             f"[bold]skill[/] {self._active_skill or '-'}",
+            f"[bold]llm[/] {self._stats.model_mode}:{self._stats.last_model_tier} · "
+            f"{self._stats.last_model_name}",
         )
 
         return Panel(
