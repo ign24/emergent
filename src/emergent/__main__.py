@@ -100,14 +100,26 @@ async def _run() -> None:
     from emergent.observability.banner import ConsoleNotifier
     notifier = ConsoleNotifier()
 
-    # Telegram gateway
-    gateway = TelegramGateway(
+    # Terminal channel (always created)
+    from emergent.channels.terminal import TerminalChannel
+    terminal = TerminalChannel(
         settings=settings,
         runtime=runtime,
         store=store,
         context_builder=context_builder,
-        notifier=notifier,
     )
+
+    # Telegram gateway (only if token is configured)
+    telegram_enabled = bool(settings.telegram.bot_token)
+    gateway: TelegramGateway | None = None
+    if telegram_enabled:
+        gateway = TelegramGateway(
+            settings=settings,
+            runtime=runtime,
+            store=store,
+            context_builder=context_builder,
+            notifier=notifier,
+        )
 
     # --- Cron callback: runs a prompt headlessly and notifies via Telegram ---
     async def _cron_run_callback(prompt: str) -> str:
@@ -121,16 +133,17 @@ async def _run() -> None:
             log.error("cron_callback_runtime_error", error=str(e))
             response_text = f"[cron] Error al ejecutar: {e}"
 
-        # Notify all allowed users via Telegram
-        for chat_id in settings.telegram.allowed_user_ids:
-            try:
-                await gateway._bot.send_message(
-                    chat_id=chat_id,
-                    text=f"⏰ *[cron]* `{prompt[:50]}`\n\n{response_text}",
-                    parse_mode="Markdown",
-                )
-            except Exception as e:
-                log.error("cron_telegram_notify_failed", chat_id=chat_id, error=str(e))
+        # Notify all allowed users via Telegram (only if gateway exists)
+        if gateway is not None:
+            for chat_id in settings.telegram.allowed_user_ids:
+                try:
+                    await gateway._bot.send_message(
+                        chat_id=chat_id,
+                        text=f"⏰ *[cron]* `{prompt[:50]}`\n\n{response_text}",
+                        parse_mode="Markdown",
+                    )
+                except Exception as e:
+                    log.error("cron_telegram_notify_failed", chat_id=chat_id, error=str(e))
 
         return response_text
 
@@ -177,10 +190,12 @@ async def _run() -> None:
 
     # Graceful shutdown
     loop = asyncio.get_running_loop()
+    channel_tasks: list[asyncio.Task[None]] = []
 
     def _handle_sigterm() -> None:
         log.info("sigterm_received")
-        asyncio.create_task(gateway.stop())
+        for task in channel_tasks:
+            task.cancel()
 
     loop.add_signal_handler(signal.SIGTERM, _handle_sigterm)
 
@@ -195,11 +210,29 @@ async def _run() -> None:
         allowed_users=len(settings.telegram.allowed_user_ids),
         scheduler_jobs=len(scheduler.get_jobs()),
         log_file=log_file,
+        telegram_enabled=telegram_enabled,
     )
 
     try:
-        await gateway.start()
+        tasks: list[asyncio.Task[None]] = [
+            asyncio.create_task(terminal.start(), name="terminal"),
+        ]
+        if gateway is not None:
+            tasks.append(asyncio.create_task(gateway.start(), name="telegram"))
+        channel_tasks = tasks
+
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        # When terminal exits, stop everything else
+        for t in pending:
+            t.cancel()
+        # Propagate exceptions from completed tasks
+        for t in done:
+            if t.exception() and not isinstance(t.exception(), asyncio.CancelledError):
+                log.error("channel_error", task=t.get_name(), error=str(t.exception()))
     finally:
+        await terminal.stop()
+        if gateway is not None:
+            await gateway.stop()
         if scheduler.running:
             scheduler.shutdown(wait=False)
         await store.close()

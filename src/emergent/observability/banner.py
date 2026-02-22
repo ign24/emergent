@@ -29,6 +29,7 @@ def print_banner(
     allowed_users: int,
     scheduler_jobs: int,
     log_file: str | None = None,
+    telegram_enabled: bool = True,
 ) -> None:
     """Print the Emergent startup banner to stdout."""
     console = Console(highlight=False)
@@ -61,8 +62,10 @@ def print_banner(
 
     _row("SQLite WAL", db_path)
     _row("ChromaDB", chroma_dir)
-    suffix = "s" if allowed_users != 1 else ""
-    _row("Telegram", f"polling  [{_DIM}]·[/]  {allowed_users} user{suffix} authorized")
+    _row("Terminal", f"interactive  [{_DIM}]·[/]  session=terminal_session")
+    if telegram_enabled:
+        suffix = "s" if allowed_users != 1 else ""
+        _row("Telegram", f"polling  [{_DIM}]·[/]  {allowed_users} user{suffix} authorized")
     _row("Scheduler", f"{scheduler_jobs} jobs loaded")
     if log_file:
         _row("Logs", log_file)

@@ -48,7 +48,7 @@ class _EnvSettings(BaseSettings):
     )
 
     ANTHROPIC_API_KEY: str = Field(...)
-    TELEGRAM_BOT_TOKEN: str = Field(...)
+    TELEGRAM_BOT_TOKEN: str = Field(default="")
     TELEGRAM_ALLOWED_USER_IDS: str = Field(default="")
 
     # Optional overrides
