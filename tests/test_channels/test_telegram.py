@@ -80,9 +80,11 @@ async def test_process_message_runs_animated_status_until_ready() -> None:
     await gateway._process_message(cast(Any, message))
 
     edit_texts = [call.kwargs["text"] for call in gateway._bot.edit_message_text.await_args_list]
-    assert any("88 millas por hora" in text for text in edit_texts)
-    assert any("1.21 giggawats" in text or "Circuitos temporales" in text for text in edit_texts)
-    assert any("88 mph" in text for text in edit_texts)
+    assert any("Procesando solicitud" in text for text in edit_texts)
+    assert any(
+        "Consultando contexto" in text or "Preparando respuesta" in text for text in edit_texts
+    )
+    assert any("Solicitud completada" in text for text in edit_texts)
 
 
 def test_format_chunk_for_telegram_converts_markdown_like_syntax() -> None:
