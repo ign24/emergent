@@ -24,10 +24,17 @@
 
 ## Routing Validation Procedure
 
-1. Run baseline session in FIXED mode (same prompts each run).
-2. Run experiment session in AUTO mode (same prompts, same order).
-3. Compare both sessions with:
+1. In terminal, set a baseline session id and run the same prompt list:
 
+   - `/session terminal_fixed`
+
+2. Set the experiment session id and repeat the exact same prompts/order:
+
+   - `/session terminal_auto`
+
+3. Keep prompt order identical to get a fair A/B comparison.
+
+4. Compare both sessions with:
 ```bash
 uv run python scripts/routing_benchmark.py \
   --session-a terminal_fixed \
@@ -36,7 +43,42 @@ uv run python scripts/routing_benchmark.py \
   --label-b AUTO
 ```
 
-4. Accept routing if:
+5. Accept routing if:
    - success rate does not regress materially
    - avg cost/success decreases
    - p95 latency stays within agreed budget
+
+## Fully Automated Run (No Manual Session Switching)
+
+```bash
+uv run python scripts/run_ab_prompts.py \
+  --prompts-file docs/ab-prompts.example.txt \
+  --session-a terminal_fixed \
+  --session-b terminal_auto \
+  --label-a FIXED \
+  --label-b AUTO \
+  --routing-a fixed \
+  --routing-b auto \
+  --model-a claude-haiku-4-5-20251001 \
+  --model-b claude-sonnet-4-20250514 \
+  --reset-sessions
+```
+
+### Optional: quality checks with JSONL cases
+
+```bash
+uv run python scripts/run_ab_prompts.py \
+  --prompts-file docs/ab-prompts.example.txt \
+  --cases-file docs/ab-cases.example.jsonl \
+  --session-a eval_fixed \
+  --session-b eval_auto \
+  --label-a FIXED \
+  --label-b AUTO \
+  --routing-a fixed \
+  --routing-b auto \
+  --model-a claude-haiku-4-5-20251001 \
+  --model-b claude-sonnet-4-20250514 \
+  --reset-sessions
+```
+
+This prints `Quality Pass Rate` plus routing tier/reason distributions.
