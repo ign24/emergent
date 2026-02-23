@@ -8,7 +8,7 @@ from typing import Any
 import anthropic
 
 from emergent import LLMProviderError, LLMRetryableError
-from emergent.llm.client import LLMClient
+from emergent.llm.client import LLMClient, TextDeltaCallback
 from emergent.llm.models import LLMResponse, LLMTextBlock, LLMToolUseBlock, LLMUsage
 
 
@@ -50,6 +50,45 @@ class AnthropicLLMClient(LLMClient):
         except anthropic.APIError as e:
             raise LLMProviderError(str(e)) from e
 
+        return self._to_llm_response(response)
+
+    async def stream_complete(
+        self,
+        *,
+        model: str,
+        system: str,
+        messages: Sequence[dict[str, Any]],
+        max_tokens: int,
+        on_text_delta: TextDeltaCallback,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "system": system,
+            "messages": list(messages),
+            "max_tokens": max_tokens,
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        try:
+            async with self._client.messages.stream(**kwargs) as stream:
+                async for delta in stream.text_stream:
+                    if delta:
+                        await on_text_delta(delta)
+                response = await stream.get_final_message()
+        except (
+            anthropic.RateLimitError,
+            anthropic.InternalServerError,
+            anthropic.APITimeoutError,
+        ) as e:
+            raise LLMRetryableError(str(e)) from e
+        except anthropic.APIError as e:
+            raise LLMProviderError(str(e)) from e
+
+        return self._to_llm_response(response)
+
+    def _to_llm_response(self, response: Any) -> LLMResponse:
         content: list[LLMTextBlock | LLMToolUseBlock] = []
         for block in response.content:
             if getattr(block, "type", "") == "text":
