@@ -124,3 +124,35 @@ class TestMemoryStore:
         assert len(by_domain) == 1
         search = await tmp_db.search_research("runtime")
         assert len(search) == 1
+
+    async def test_auto_name_session_from_first_prompt(self, tmp_db: MemoryStore):
+        name = await tmp_db.auto_name_session_from_first_prompt(
+            "session-1",
+            "Necesito ayuda para arreglar el login en Telegram",
+            channel="terminal",
+        )
+        assert name.startswith("necesito-ayuda-para-arreglar")
+
+        name_again = await tmp_db.auto_name_session_from_first_prompt(
+            "session-1",
+            "Otro prompt distinto",
+            channel="terminal",
+        )
+        assert name_again == name
+
+    async def test_get_all_sessions_with_names(self, tmp_db: MemoryStore):
+        await tmp_db.auto_name_session_from_first_prompt("session-1", "debug login telegram")
+        await tmp_db.save_conversation_turn("session-1", "user", "hola")
+
+        sessions = await tmp_db.get_all_sessions_with_names(limit=5)
+        assert sessions[0]["session_id"] == "session-1"
+        assert sessions[0]["display_name"] == "debug-login-telegram"
+
+    async def test_list_chat_sessions_with_names(self, tmp_db: MemoryStore):
+        await tmp_db.save_session_mapping(1, "session-a")
+        await tmp_db.save_session_mapping(1, "session-b")
+        await tmp_db.auto_name_session_from_first_prompt("session-a", "fix auth")
+
+        sessions = await tmp_db.list_chat_sessions_with_names(1, limit=10)
+        assert sessions[0]["session_id"] == "session-b"
+        assert sessions[1]["display_name"] == "fix-auth"

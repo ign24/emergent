@@ -13,6 +13,7 @@ import structlog
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import CommandStart
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -31,22 +32,18 @@ logger = structlog.get_logger(__name__)
 
 MAX_MESSAGE_LENGTH = 4096  # Telegram limit
 
-_STATUS_HISTORY_ACTIVATED = "⚡ Flux listo..."
+_STATUS_HISTORY_ACTIVATED = "Iniciando solicitud..."
 _STATUS_ANIMATION_FRAMES = (
-    "🛣️ Alcanzando 88 millas por hora...",
-    "⚡ Generando 1.21 giggawats de potencia...",
-    "🕰️ Circuitos temporales...",
-    "🚪 Abriendo portal de contexto...",
-    "📡 Sincronizando linea temporal...",
-    "🧪 Estabilizando flujo temporal...",
-    "🗺️ Verificando coordenadas de 1985...",
-    "🔧 Calibrando condensador de flujo...",
-    "📓 Consultando almanaque deportivo...",
+    "Procesando solicitud.",
+    "Procesando solicitud..",
+    "Procesando solicitud...",
+    "Consultando contexto...",
+    "Preparando respuesta...",
 )
 _STATUS_ANIMATION_INTERVAL_SECONDS = 2.8
-_STATUS_CONFIRM = "⚖️ Linea temporal sensible. OK?"
-_STATUS_READY = "✅ 88 mph alcanzadas"
-_STATUS_ERROR = "⚠️ Paradoja temporal. Reintento"
+_STATUS_CONFIRM = "Se requiere autorización para continuar."
+_STATUS_READY = "Solicitud completada."
+_STATUS_ERROR = "Ocurrió un error. Intenta nuevamente."
 
 # Pending confirmations: {callback_key: asyncio.Event}
 _pending_confirmations: dict[str, asyncio.Event] = {}
@@ -82,12 +79,27 @@ def _split_message(text: str, max_len: int = MAX_MESSAGE_LENGTH) -> list[str]:
 _HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s+(.+)$")
 _BOLD_PATTERN = re.compile(r"\*\*(.+?)\*\*")
 _CODE_PATTERN = re.compile(r"`([^`]+)`")
+_FENCED_CODE_BLOCK_PATTERN = re.compile(
+    r"```(?P<lang>[a-zA-Z0-9_+\-#.]+)?[ \t]*\n(?P<code>.*?)(?:\n)?```",
+    re.DOTALL,
+)
+_SESSION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{3,64}$")
+_LONG_CODE_BLOCK_MIN_LINES = 25
+_LONG_CODE_BLOCK_MIN_CHARS = 1500
 
 
-def _format_chunk_for_telegram(chunk: str) -> str:
-    """Convert a markdown-like chunk to Telegram HTML subset."""
+@dataclass
+class _CodeAttachment:
+    filename: str
+    content: str
+    language: str | None
+    line_count: int
+
+
+def _format_plain_text_for_telegram(text: str) -> str:
+    """Convert plain markdown-like lines to Telegram HTML subset."""
     lines: list[str] = []
-    for raw_line in chunk.splitlines():
+    for raw_line in text.splitlines():
         line = raw_line.rstrip()
         heading = _HEADING_PATTERN.match(line)
         if heading:
@@ -102,6 +114,122 @@ def _format_chunk_for_telegram(chunk: str) -> str:
         lines.append(escaped)
 
     return "\n".join(lines)
+
+
+def _normalize_language(language: str | None) -> str | None:
+    """Normalize fenced language labels for display and file extension mapping."""
+    if not language:
+        return None
+    normalized = re.sub(r"[^a-z0-9_+\-.#]", "", language.strip().lower())
+    return normalized or None
+
+
+def _extension_for_language(language: str | None) -> str:
+    """Infer a file extension from fenced code language."""
+    mapping = {
+        "bash": "sh",
+        "console": "txt",
+        "css": "css",
+        "dockerfile": "Dockerfile",
+        "go": "go",
+        "html": "html",
+        "java": "java",
+        "javascript": "js",
+        "js": "js",
+        "json": "json",
+        "jsonl": "jsonl",
+        "markdown": "md",
+        "md": "md",
+        "py": "py",
+        "python": "py",
+        "sh": "sh",
+        "shell": "sh",
+        "sql": "sql",
+        "text": "txt",
+        "toml": "toml",
+        "ts": "ts",
+        "tsx": "tsx",
+        "txt": "txt",
+        "xml": "xml",
+        "yaml": "yaml",
+        "yml": "yml",
+    }
+    if language == "dockerfile":
+        return "Dockerfile"
+    return mapping.get(language or "", "txt")
+
+
+def _extract_long_code_blocks(text: str) -> tuple[str, list[_CodeAttachment]]:
+    """Replace long fenced blocks with placeholders and collect attachments."""
+    attachments: list[_CodeAttachment] = []
+    parts: list[str] = []
+    cursor = 0
+    attachment_index = 1
+
+    for match in _FENCED_CODE_BLOCK_PATTERN.finditer(text):
+        parts.append(text[cursor : match.start()])
+        code = (match.group("code") or "").strip("\n")
+        line_count = code.count("\n") + 1 if code else 0
+        is_long = (
+            line_count >= _LONG_CODE_BLOCK_MIN_LINES or len(code) >= _LONG_CODE_BLOCK_MIN_CHARS
+        )
+
+        if is_long:
+            language = _normalize_language(match.group("lang"))
+            extension = _extension_for_language(language)
+            filename = (
+                f"snippet_{attachment_index}.Dockerfile"
+                if extension == "Dockerfile"
+                else f"snippet_{attachment_index}.{extension}"
+            )
+            attachments.append(
+                _CodeAttachment(
+                    filename=filename,
+                    content=code,
+                    language=language,
+                    line_count=line_count,
+                )
+            )
+            language_suffix = f" ({language})" if language else ""
+            parts.append(
+                f"\nBloque de codigo adjunto: `{filename}`{language_suffix}. "
+                f"({line_count} lineas)\n"
+            )
+            attachment_index += 1
+        else:
+            parts.append(match.group(0))
+
+        cursor = match.end()
+
+    parts.append(text[cursor:])
+    return "".join(parts), attachments
+
+
+def _format_chunk_for_telegram(chunk: str) -> str:
+    """Convert a markdown-like chunk to Telegram HTML subset."""
+    formatted_parts: list[str] = []
+    cursor = 0
+
+    for match in _FENCED_CODE_BLOCK_PATTERN.finditer(chunk):
+        plain = chunk[cursor : match.start()]
+        if plain:
+            formatted_parts.append(_format_plain_text_for_telegram(plain))
+
+        language = _normalize_language(match.group("lang"))
+        if language:
+            language_html = html.escape(language, quote=False)
+            formatted_parts.append(f"<b>Lenguaje:</b> <code>{language_html}</code>")
+
+        code = (match.group("code") or "").strip("\n")
+        escaped_code = html.escape(code, quote=False)
+        formatted_parts.append(f"<pre><code>{escaped_code}</code></pre>")
+        cursor = match.end()
+
+    tail = chunk[cursor:]
+    if tail:
+        formatted_parts.append(_format_plain_text_for_telegram(tail))
+
+    return "\n".join(part for part in formatted_parts if part)
 
 
 class TelegramGateway:
@@ -131,6 +259,7 @@ class TelegramGateway:
 
         # Map session_id per Telegram user (chat_id)
         self._sessions: dict[int, str] = {}
+        self._pending_session_picks: dict[str, tuple[int, str]] = {}
 
         self._setup_handlers()
 
@@ -146,6 +275,7 @@ class TelegramGateway:
         session_id = str(uuid.uuid4())
         self._sessions[chat_id] = session_id
         await self._store.save_session_mapping(chat_id, session_id)
+        await self._store.ensure_session(session_id, channel="telegram")
         return session_id
 
     def _setup_handlers(self) -> None:
@@ -185,9 +315,21 @@ class TelegramGateway:
         if not user_text.strip():
             return
 
+        if await self._handle_session_command(message):
+            return
+
         session_id = await self._get_or_create_session(chat_id)
         log = logger.bind(chat_id=chat_id, session_id=session_id)
         log.info("telegram_message_received", message_len=len(user_text))
+
+        try:
+            await self._store.auto_name_session_from_first_prompt(
+                session_id,
+                user_text,
+                channel="telegram",
+            )
+        except Exception as e:
+            log.warning("telegram_session_autoname_failed", error=str(e))
 
         if self._notifier:
             user = message.from_user
@@ -224,8 +366,8 @@ class TelegramGateway:
                 if new_summary:
                     await self._store.save_session_summary(session_id, new_summary)
                     summary = new_summary
-                    # Keep only last 5 turns after summarization
-                    history = history[-5:]
+                    keep_turns = getattr(self._context_builder, "history_keep_after_summary", 5)
+                    history = history[-keep_turns:]
                     log.info("auto_summarization_done", summary_len=len(new_summary))
             except Exception as e:
                 log.error("auto_summarization_failed", error=str(e))
@@ -309,11 +451,11 @@ class TelegramGateway:
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="✅ Ejecutar",
+                        text="Autorizar",
                         callback_data=f"confirm_yes_{callback_key}",
                     ),
                     InlineKeyboardButton(
-                        text="❌ Cancelar",
+                        text="Cancelar",
                         callback_data=f"confirm_no_{callback_key}",
                     ),
                 ]
@@ -323,10 +465,10 @@ class TelegramGateway:
         await self._bot.send_message(
             chat_id=chat_id,
             text=(
-                f"⚖️ *Protocolo DeLorean*\n\n"
-                f"Tool: `{tool_name}`\n"
-                f"Comando: `{command_preview}`\n\n"
-                f"_60 segundos para responder._"
+                f"*Autorización requerida*\n\n"
+                f"Herramienta: `{tool_name}`\n"
+                f"Acción: `{command_preview}`\n\n"
+                f"_Tienes 60 segundos para responder._"
             ),
             parse_mode="Markdown",
             reply_markup=keyboard,
@@ -338,7 +480,8 @@ class TelegramGateway:
         except TimeoutError:
             result = False
             await self._bot.send_message(
-                chat_id=chat_id, text="⏱️ Tiempo agotado. Operación cancelada."
+                chat_id=chat_id,
+                text="Tiempo de espera agotado. Operación cancelada.",
             )
         finally:
             _pending_confirmations.pop(callback_key, None)
@@ -351,6 +494,10 @@ class TelegramGateway:
     async def _handle_confirmation_callback(self, callback: CallbackQuery) -> None:
         """Handle inline keyboard button presses."""
         data = callback.data or ""
+
+        if data.startswith("session_pick_"):
+            await self._handle_session_pick_callback(callback)
+            return
 
         if data.startswith("confirm_yes_"):
             key = data[len("confirm_yes_") :]
@@ -366,17 +513,126 @@ class TelegramGateway:
         if event:
             _confirmation_results[key] = approved
             event.set()
-            await callback.answer("✅ Aprobado" if approved else "❌ Cancelado")
+            await callback.answer("Autorizado" if approved else "Cancelado")
             await callback.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
-            status = "aprobada ✅" if approved else "cancelada ❌"
+            status = "autorizada" if approved else "cancelada"
             await callback.message.answer(f"Operación {status}.")  # type: ignore[union-attr]
         else:
             await callback.answer("Esta confirmación ya expiró.")
+
+    async def _handle_session_command(self, message: Message) -> bool:
+        """Handle /session command in Telegram chat."""
+        raw = (message.text or "").strip()
+        if not raw:
+            return False
+
+        parts = raw.split(maxsplit=1)
+        command = parts[0].lower()
+        if not command.startswith("/session"):
+            return False
+
+        chat_id = message.chat.id
+        current_session = await self._get_or_create_session(chat_id)
+
+        if len(parts) > 1:
+            arg = parts[1].strip()
+            if arg.lower() in {"new", "nuevo", "reset", "default"}:
+                session_id = str(uuid.uuid4())
+                self._sessions[chat_id] = session_id
+                await self._store.save_session_mapping(chat_id, session_id)
+                await self._store.ensure_session(session_id, channel="telegram")
+                await self._bot.send_message(
+                    chat_id=chat_id,
+                    text=f"Nueva sesión: `{session_id}`",
+                    parse_mode="Markdown",
+                )
+                return True
+
+            if not _SESSION_ID_PATTERN.match(arg):
+                await self._bot.send_message(
+                    chat_id=chat_id,
+                    text=("Session id inválido. Usa 3-64 caracteres (letras, números, '_' o '-')."),
+                )
+                return True
+
+            self._sessions[chat_id] = arg
+            await self._store.save_session_mapping(chat_id, arg)
+            await self._store.ensure_session(arg, channel="telegram")
+            await self._bot.send_message(
+                chat_id=chat_id,
+                text=f"Sesión activa: `{arg}`",
+                parse_mode="Markdown",
+            )
+            return True
+
+        sessions = await self._store.list_chat_sessions_with_names(chat_id, limit=10)
+
+        buttons: list[list[InlineKeyboardButton]] = []
+        for item in sessions:
+            session_id = str(item["session_id"])
+            display_name = str(item["display_name"])
+            key = str(uuid.uuid4())[:8]
+            self._pending_session_picks[key] = (chat_id, session_id)
+            prefix = "[actual] " if session_id == current_session else "[historial] "
+            short_id = session_id[:8]
+            name = display_name if display_name != session_id else f"{short_id}..."
+            label = f"{prefix}{name[:28]}"
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=label,
+                        callback_data=f"session_pick_{key}",
+                    )
+                ]
+            )
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await self._bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "Sesiones disponibles\n"
+                "Elegí una para volver a ese contexto.\n\n"
+                f"Actual: `{current_session}`"
+            ),
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+        return True
+
+    async def _handle_session_pick_callback(self, callback: CallbackQuery) -> None:
+        """Activate a previously used session from inline picker."""
+        data = callback.data or ""
+        key = data[len("session_pick_") :]
+        payload = self._pending_session_picks.pop(key, None)
+        if payload is None:
+            await callback.answer("Esta selección ya expiró.")
+            return
+
+        callback_chat_id = callback.message.chat.id if callback.message else None
+        if not isinstance(callback_chat_id, int):
+            await callback.answer("No pude identificar el chat.")
+            return
+
+        owner_chat_id, session_id = payload
+        if owner_chat_id != callback_chat_id:
+            await callback.answer("Esta sesión no pertenece a este chat.")
+            return
+
+        self._sessions[callback_chat_id] = session_id
+        await self._store.save_session_mapping(callback_chat_id, session_id)
+        await callback.answer("Sesión activada")
+        if callback.message:
+            await callback.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
+            await callback.message.answer(
+                f"Volvimos a la sesión `{session_id}`", parse_mode="Markdown"
+            )
 
     async def _send_response(self, chat_id: int, text: str) -> None:
         """Send response, chunking if it exceeds Telegram's limit."""
         if not text:
             text = "(sin respuesta)"
+
+        text, attachments = _extract_long_code_blocks(text)
 
         chunks = _split_message(text)
         for chunk in chunks:
@@ -395,6 +651,34 @@ class TelegramGateway:
                         chat_id=chat_id,
                         error=str(fallback_error),
                     )
+
+        for attachment in attachments:
+            payload = attachment.content.encode("utf-8")
+            caption = (
+                f"Bloque de codigo adjunto ({attachment.line_count} lineas)."
+                if not attachment.language
+                else (
+                    "Bloque de codigo adjunto "
+                    f"({attachment.language}, {attachment.line_count} lineas)."
+                )
+            )
+            try:
+                await self._bot.send_document(
+                    chat_id=chat_id,
+                    document=BufferedInputFile(payload, filename=attachment.filename),
+                    caption=caption,
+                )
+            except Exception as e:
+                logger.warning(
+                    "telegram_send_document_failed",
+                    chat_id=chat_id,
+                    filename=attachment.filename,
+                    error=str(e),
+                )
+                fallback_header = f"Adjunto no disponible: {attachment.filename}"
+                fallback_text = f"{fallback_header}\n\n{attachment.content}"
+                for fallback_chunk in _split_message(fallback_text):
+                    await self._bot.send_message(chat_id=chat_id, text=fallback_chunk)
 
     async def _status_start(self, chat_id: int, text: str) -> _StatusHandle:
         """Create a single status message that can be updated during the request."""

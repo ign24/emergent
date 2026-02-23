@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sqlite3
 import uuid
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import Any
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+_SESSION_NAME_WORD_PATTERN = re.compile(r"[A-Za-z0-9_]+")
 
 _SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -85,6 +88,21 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS chat_session_history (
+    chat_id INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (chat_id, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS session_metadata (
+    session_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    channel TEXT,
+    first_prompt TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS research_findings (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
@@ -107,6 +125,10 @@ CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON traces(timestamp);
 CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id);
 CREATE INDEX IF NOT EXISTS idx_spans_error ON spans(error) WHERE error IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_profile_confidence ON user_profile(confidence);
+CREATE INDEX IF NOT EXISTS idx_chat_session_history_chat_updated
+    ON chat_session_history(chat_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_metadata_updated
+    ON session_metadata(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_domain ON research_findings(domain);
 CREATE INDEX IF NOT EXISTS idx_findings_score ON research_findings(relevance_score DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_found ON research_findings(found_at);
@@ -187,9 +209,78 @@ class MemoryStore:
 
     async def get_all_sessions(self) -> list[str]:
         rows = await self._execute(
-            "SELECT DISTINCT session_id FROM conversations ORDER BY MIN(timestamp) DESC"
+            "SELECT session_id, MAX(rowid) AS last_row FROM conversations "
+            "GROUP BY session_id ORDER BY last_row DESC"
         )
         return [r["session_id"] for r in rows]
+
+    async def get_all_sessions_with_names(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = await self._execute(
+            "SELECT c.session_id AS session_id, "
+            "COALESCE(m.display_name, c.session_id) AS display_name, "
+            "COUNT(*) AS turns, MAX(c.rowid) AS last_row "
+            "FROM conversations c "
+            "LEFT JOIN session_metadata m ON m.session_id = c.session_id "
+            "GROUP BY c.session_id "
+            "ORDER BY last_row DESC LIMIT ?",
+            (int(limit),),
+        )
+        return [
+            {
+                "session_id": r["session_id"],
+                "display_name": r["display_name"],
+                "turns": int(r["turns"]),
+            }
+            for r in rows
+        ]
+
+    async def ensure_session(self, session_id: str, channel: str | None = None) -> None:
+        await self._execute(
+            "INSERT OR IGNORE INTO session_metadata "
+            "(session_id, display_name, channel, updated_at) "
+            "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+            (session_id, session_id, channel),
+        )
+
+    async def auto_name_session_from_first_prompt(
+        self,
+        session_id: str,
+        prompt: str,
+        channel: str | None = None,
+    ) -> str:
+        rows = await self._execute(
+            "SELECT display_name FROM session_metadata WHERE session_id = ?",
+            (session_id,),
+        )
+
+        if rows:
+            existing = str(rows[0]["display_name"] or "").strip()
+            if existing and existing != session_id:
+                await self._execute(
+                    "UPDATE session_metadata SET updated_at = CURRENT_TIMESTAMP "
+                    "WHERE session_id = ?",
+                    (session_id,),
+                )
+                return existing
+
+        display_name = self._build_session_name(prompt)
+        first_prompt = (prompt or "").strip()[:500]
+        await self._execute(
+            "INSERT OR REPLACE INTO session_metadata "
+            "(session_id, display_name, channel, first_prompt, updated_at) "
+            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            (session_id, display_name, channel, first_prompt),
+        )
+        return display_name
+
+    def _build_session_name(self, prompt: str) -> str:
+        stripped = (prompt or "").strip()
+        first_line = stripped.splitlines()[0] if stripped else ""
+        words = _SESSION_NAME_WORD_PATTERN.findall(first_line.lower())
+        if not words:
+            return "sesion"
+        name = "-".join(words[:6])
+        return name[:64]
 
     # --- Traces ---
 
@@ -305,6 +396,11 @@ class MemoryStore:
             "VALUES (?, ?, CURRENT_TIMESTAMP)",
             (chat_id, session_id),
         )
+        await self._execute(
+            "INSERT OR REPLACE INTO chat_session_history (chat_id, session_id, updated_at) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (chat_id, session_id),
+        )
 
     async def get_session_id(self, chat_id: int) -> str | None:
         rows = await self._execute(
@@ -312,6 +408,44 @@ class MemoryStore:
             (chat_id,),
         )
         return rows[0]["session_id"] if rows else None
+
+    async def list_chat_sessions(self, chat_id: int) -> list[str]:
+        rows = await self._execute(
+            "SELECT session_id FROM chat_session_history "
+            "WHERE chat_id = ? ORDER BY updated_at DESC, rowid DESC",
+            (chat_id,),
+        )
+        sessions = [r["session_id"] for r in rows]
+
+        current = await self.get_session_id(chat_id)
+        if current and current not in sessions:
+            sessions.insert(0, current)
+        return sessions
+
+    async def list_chat_sessions_with_names(
+        self, chat_id: int, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        rows = await self._execute(
+            "SELECT h.session_id AS session_id, "
+            "COALESCE(m.display_name, h.session_id) AS display_name "
+            "FROM chat_session_history h "
+            "LEFT JOIN session_metadata m ON m.session_id = h.session_id "
+            "WHERE h.chat_id = ? "
+            "ORDER BY h.updated_at DESC, h.rowid DESC LIMIT ?",
+            (chat_id, int(limit)),
+        )
+        items = [
+            {
+                "session_id": r["session_id"],
+                "display_name": r["display_name"],
+            }
+            for r in rows
+        ]
+
+        current = await self.get_session_id(chat_id)
+        if current and all(item["session_id"] != current for item in items):
+            items.insert(0, {"session_id": current, "display_name": current})
+        return items
 
     # --- Research Findings ---
 

@@ -1,18 +1,19 @@
-"""Push-to-talk voice channel (global key listener)."""
+"""Command-driven voice channel for terminal interactions."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import sys
 import tempfile
 import time
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-import keyboard
 import numpy as np
 import structlog
 from faster_whisper import WhisperModel
@@ -25,12 +26,13 @@ from emergent.memory.store import MemoryStore
 logger = structlog.get_logger(__name__)
 
 SESSION_ID = "voice_session"
+VoiceStatusCallback = Callable[[str, str], None]
 
 
 @dataclass(frozen=True)
 class VoiceSettings:
     enabled: bool = False
-    ptt_key: str = "f24"
+    ptt_key: str = "right ctrl"
     ptt_scan_code: int | None = None
     sample_rate: int = 16_000
     channels: int = 1
@@ -49,6 +51,10 @@ class VoiceSettings:
     tts_sentence_silence: float = 0.15
     tts_max_chars: int = 500
     ui_beep: bool = False
+    vad_mode: int = 2
+    silence_end_ms: int = 700
+    min_speech_ms: int = 250
+    max_utterance_seconds: int = 20
 
 
 def _load_voice_settings(cfg: dict[str, Any]) -> VoiceSettings:
@@ -59,7 +65,7 @@ def _load_voice_settings(cfg: dict[str, Any]) -> VoiceSettings:
     scan_code = int(scan_raw) if scan_raw is not None else None
     return VoiceSettings(
         enabled=bool(cfg.get("enabled", False)),
-        ptt_key=str(cfg.get("ptt_key", "f24")).strip().lower(),
+        ptt_key=str(cfg.get("ptt_key", "right ctrl")).strip().lower(),
         ptt_scan_code=scan_code,
         sample_rate=max(8_000, int(cfg.get("sample_rate", 16_000))),
         channels=max(1, int(cfg.get("channels", 1))),
@@ -78,6 +84,10 @@ def _load_voice_settings(cfg: dict[str, Any]) -> VoiceSettings:
         tts_sentence_silence=float(cfg.get("tts_sentence_silence", 0.15)),
         tts_max_chars=max(80, int(cfg.get("tts_max_chars", 500))),
         ui_beep=bool(cfg.get("ui_beep", False)),
+        vad_mode=min(3, max(0, int(cfg.get("vad_mode", 2)))),
+        silence_end_ms=max(200, int(cfg.get("silence_end_ms", 700))),
+        min_speech_ms=max(80, int(cfg.get("min_speech_ms", 250))),
+        max_utterance_seconds=max(3, int(cfg.get("max_utterance_seconds", 20))),
     )
 
 
@@ -127,6 +137,7 @@ class VoiceChannel:
         runtime: AgentRuntime,
         store: MemoryStore,
         context_builder: ContextBuilder,
+        status_callback: VoiceStatusCallback | None = None,
     ) -> None:
         self._app_settings = settings
         self._voice_settings = _load_voice_settings(settings.voice or {})
@@ -136,46 +147,54 @@ class VoiceChannel:
         self._store = store
         self._context_builder = context_builder
         self._running = False
-        self._stop_event = asyncio.Event()
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._press_hook: Any = None
-        self._release_hook: Any = None
 
         self._stt_model: WhisperModel | None = None
         self._stt_model_lock = asyncio.Lock()
         self._tts_warned = False
-
-    def _status(self, message: str, beep: bool = False) -> None:
-        """Print compact voice state updates in terminal."""
-        line = f"[voice] {message}"
-        if beep and self._voice_settings.ui_beep:
-            line = "\a" + line
-        print(line, file=sys.stderr, flush=True)
-
         self._recording = False
         self._chunks: list[np.ndarray] = []
         self._input_stream: Any = None
+        self._status_callback = status_callback
+        self._continuous_task: asyncio.Task[None] | None = None
+        self._continuous_stop = asyncio.Event()
+        self._capture_lock = asyncio.Lock()
+
+    def _status(self, message: str, beep: bool = False, state: str | None = None) -> None:
+        """Print compact voice state updates in terminal."""
+        status_callback = getattr(self, "_status_callback", None)
+        line = f"[voice] {message}"
+        if beep and self._voice_settings.ui_beep and status_callback is None:
+            line = "\a" + line
+        if status_callback is None:
+            print(line, file=sys.stderr, flush=True)
+
+        if status_callback is not None and state is not None:
+            try:
+                status_callback(state, message)
+            except Exception as e:
+                logger.warning("voice_status_callback_failed", error=str(e))
 
     @property
     def enabled(self) -> bool:
         return self._voice_settings.enabled
 
+    @property
+    def continuous_active(self) -> bool:
+        task = self._continuous_task
+        return task is not None and not task.done()
+
     async def start(self) -> None:
-        """Start global key listeners and process hold-to-talk events."""
+        """Initialize voice channel for command-driven capture."""
         if not self._voice_settings.enabled:
             logger.info("voice_channel_disabled")
+            self._status("canal de voz desactivado", state="off")
+            return
+
+        if self._running:
             return
 
         self._running = True
-        self._stop_event.clear()
-        self._loop = asyncio.get_running_loop()
-
-        if self._voice_settings.ptt_scan_code is not None:
-            self._press_hook = keyboard.hook(self._on_event)
-            self._release_hook = self._press_hook
-        else:
-            self._press_hook = keyboard.on_press_key(self._ptt_key, self._on_press)
-            self._release_hook = keyboard.on_release_key(self._ptt_key, self._on_release)
+        self._status("canal de voz iniciando", state="starting")
 
         logger.info(
             "voice_channel_started",
@@ -186,65 +205,199 @@ class VoiceChannel:
             tts_enabled=self._voice_settings.tts_enabled,
         )
         self._status(
-            "PTT listo "
-            f"(key={self._voice_settings.ptt_key}, "
-            f"scan={self._voice_settings.ptt_scan_code})"
+            "modo comando listo (/voice)",
+            state="ready",
         )
-        await self._stop_event.wait()
+
+    async def start_continuous(self) -> None:
+        """Enable continuous listen/transcribe/respond mode."""
+        if not self._voice_settings.enabled:
+            self._status("canal de voz desactivado", state="off")
+            return
+        if not self._running:
+            await self.start()
+        if self.continuous_active:
+            self._status("modo voz continuo ya activo", state="listening")
+            return
+
+        self._continuous_stop.clear()
+        self._continuous_task = asyncio.create_task(
+            self._continuous_loop(),
+            name="voice_continuous_loop",
+        )
+        self._status("modo voz continuo activo (/voice-off para salir)", state="listening")
+
+    async def stop_continuous(self) -> None:
+        """Disable continuous voice mode."""
+        self._continuous_stop.set()
+        task = self._continuous_task
+        self._continuous_task = None
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=1.0)
+            except TimeoutError:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        await self._stop_recording()
+        self._status("modo voz continuo desactivado", state="ready")
+
+    async def capture_once(self, duration_seconds: int | None = None) -> None:
+        """Capture one utterance via terminal command and process it."""
+        if not self._voice_settings.enabled:
+            self._status("canal de voz desactivado", state="off")
+            return
+
+        if self.continuous_active:
+            self._status("modo continuo activo; usa /voice-off primero", state="listening")
+            return
+
+        if not self._running:
+            await self.start()
+        if self._recording:
+            return
+
+        requested = (
+            duration_seconds
+            if duration_seconds is not None
+            else self._voice_settings.max_utterance_seconds
+        )
+        duration = max(1, min(int(requested), self._voice_settings.max_utterance_seconds))
+
+        async with self._capture_lock:
+            try:
+                await self._start_recording()
+                self._status(f"grabando {duration}s... habla ahora", state="listening")
+                await asyncio.sleep(duration)
+                await self._finalize_utterance()
+            except Exception as e:
+                logger.error("voice_command_capture_failed", error=str(e))
+                self._status("fallo captura de voz", state="error")
+
+    async def _continuous_loop(self) -> None:
+        """Capture utterances continuously until mode is disabled."""
+        try:
+            while self._running and not self._continuous_stop.is_set():
+                audio = await self._capture_until_silence()
+                if audio is None:
+                    continue
+
+                async with self._capture_lock:
+                    await self._process_audio(audio)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.error("voice_continuous_loop_failed", error=str(e))
+            self._status("fallo en modo continuo", state="error")
+
+    async def _capture_until_silence(self) -> np.ndarray | None:
+        """Capture one utterance using WebRTC VAD start/end detection."""
+        if self._continuous_stop.is_set():
+            return None
+
+        sample_rate = self._voice_settings.sample_rate
+        if sample_rate not in {8000, 16000, 32000, 48000}:
+            logger.warning("voice_invalid_vad_sample_rate", sample_rate=sample_rate)
+            sample_rate = 16000
+
+        frame_ms = 20
+        frame_samples = int(sample_rate * frame_ms / 1000)
+        start_frames_needed = max(1, self._voice_settings.min_speech_ms // frame_ms)
+        silence_frames_needed = max(1, self._voice_settings.silence_end_ms // frame_ms)
+        max_frames = max(1, self._voice_settings.max_utterance_seconds * 1000 // frame_ms)
+
+        try:
+            import sounddevice as sd
+            import webrtcvad
+        except ModuleNotFoundError as e:
+            logger.error("voice_dependency_missing", dependency=str(e))
+            self._status("faltan dependencias de voz (sounddevice/webrtcvad)", state="error")
+            self._continuous_stop.set()
+            return None
+        except OSError as e:
+            logger.error("voice_audio_backend_missing", error=str(e))
+            self._status("falta backend de audio (PortAudio). instala libportaudio2", state="error")
+            self._continuous_stop.set()
+            return None
+
+        vad = webrtcvad.Vad(self._voice_settings.vad_mode)
+        speech_started = False
+        speech_frames = 0
+        silence_frames = 0
+        total_frames = 0
+        collected = bytearray()
+        pre_roll: list[bytes] = []
+
+        self._status("escuchando...", state="listening")
+
+        try:
+            with sd.RawInputStream(
+                samplerate=sample_rate,
+                channels=1,
+                dtype="int16",
+                blocksize=frame_samples,
+            ) as stream:
+                while self._running and not self._continuous_stop.is_set():
+                    frame_bytes, overflowed = await asyncio.to_thread(stream.read, frame_samples)
+                    if overflowed:
+                        logger.warning("voice_input_overflow")
+
+                    chunk = bytes(frame_bytes)
+                    is_speech = vad.is_speech(chunk, sample_rate)
+                    total_frames += 1
+
+                    if not speech_started:
+                        pre_roll.append(chunk)
+                        if len(pre_roll) > 10:
+                            pre_roll.pop(0)
+
+                        if is_speech:
+                            speech_frames += 1
+                        else:
+                            speech_frames = 0
+
+                        if speech_frames >= start_frames_needed:
+                            speech_started = True
+                            for frame in pre_roll:
+                                collected.extend(frame)
+                            pre_roll.clear()
+                        continue
+
+                    collected.extend(chunk)
+                    if is_speech:
+                        silence_frames = 0
+                    else:
+                        silence_frames += 1
+
+                    if silence_frames >= silence_frames_needed or total_frames >= max_frames:
+                        break
+        except Exception as e:
+            logger.error("voice_input_stream_failed", error=str(e))
+            if "PortAudio" in str(e):
+                self._status("PortAudio no disponible. instala libportaudio2", state="error")
+            else:
+                self._status(
+                    "no pude abrir el microfono (revisa permisos/dispositivo)", state="error"
+                )
+            self._continuous_stop.set()
+            return None
+
+        if not speech_started or not collected:
+            return None
+
+        audio = np.frombuffer(bytes(collected), dtype=np.int16).astype(np.float32) / 32768.0
+        if len(audio) < sample_rate // 4:
+            return None
+        return audio
 
     async def stop(self) -> None:
-        """Stop listeners and release resources."""
+        """Stop channel and release resources."""
+        await self.stop_continuous()
         self._running = False
-        self._stop_event.set()
-
-        press_hook = self._press_hook
-        release_hook = self._release_hook
-        self._press_hook = None
-        self._release_hook = None
-
-        if press_hook is not None:
-            keyboard.unhook(press_hook)
-        if release_hook is not None and release_hook is not press_hook:
-            keyboard.unhook(release_hook)
 
         await self._stop_recording()
         logger.info("voice_channel_stopped")
-        self._status("canal de voz detenido")
-
-    def _on_press(self, _event: keyboard.KeyboardEvent) -> None:
-        """Thread callback from keyboard for key press."""
-        if not self._running:
-            return
-        if self._loop is None:
-            return
-        self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self._start_recording_safe()))
-
-    def _on_release(self, _event: keyboard.KeyboardEvent) -> None:
-        """Thread callback from keyboard for key release."""
-        if not self._running:
-            return
-        if self._loop is None:
-            return
-        self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self._finalize_utterance()))
-
-    def _on_event(self, event: keyboard.KeyboardEvent) -> None:
-        """Handle global keyboard events when using scan-code matching."""
-        scan_code = self._voice_settings.ptt_scan_code
-        if scan_code is None:
-            return
-        if event.scan_code != scan_code:
-            return
-        if event.event_type == keyboard.KEY_DOWN:
-            self._on_press(event)
-        elif event.event_type == keyboard.KEY_UP:
-            self._on_release(event)
-
-    async def _start_recording_safe(self) -> None:
-        """Start recording, swallowing callback-originated errors."""
-        try:
-            await self._start_recording()
-        except Exception as e:
-            logger.error("voice_recording_start_failed", error=str(e))
+        self._status("canal de voz detenido", state="stopped")
 
     async def _start_recording(self) -> None:
         """Start microphone recording while key is held."""
@@ -272,7 +425,7 @@ class VoiceChannel:
         try:
             self._input_stream.start()
             logger.info("voice_recording_started")
-            self._status("escuchando... (mantene apretado)", beep=True)
+            self._status("escuchando...", beep=True, state="listening")
         except Exception:
             self._recording = False
             self._input_stream.close()
@@ -290,7 +443,7 @@ class VoiceChannel:
             self._input_stream.close()
         finally:
             self._input_stream = None
-            self._status("microfono liberado", beep=True)
+            self._status("microfono liberado", beep=True, state="ready")
 
     async def _finalize_utterance(self) -> None:
         """Stop recording, transcribe, and run the agent."""
@@ -298,23 +451,28 @@ class VoiceChannel:
             return
 
         await self._stop_recording()
-        max_samples = self._voice_settings.sample_rate * self._voice_settings.max_record_seconds
+        max_samples = self._voice_settings.sample_rate * self._voice_settings.max_utterance_seconds
         audio = _normalize_audio(self._chunks, self._voice_settings.channels, max_samples)
         self._chunks = []
+
+        await self._process_audio(audio)
+
+    async def _process_audio(self, audio: np.ndarray | None) -> None:
+        """Transcribe and run agent for one normalized audio utterance."""
 
         if audio is None or len(audio) < self._voice_settings.sample_rate // 4:
             logger.info("voice_ignored_short_audio")
             return
 
-        self._status("transcribiendo...")
+        self._status("transcribiendo...", state="transcribing")
         transcript = await self._transcribe(audio)
         if not transcript:
             logger.info("voice_empty_transcript")
-            self._status("no te escuche claro, proba de nuevo")
+            self._status("no te escuche claro, proba de nuevo", state="ready")
             return
 
         logger.info("voice_transcript_ready", transcript_preview=transcript[:80])
-        self._status("transcripcion lista, procesando...")
+        self._status("transcripcion lista, procesando...", state="thinking")
         await self._run_agent_for_transcript(transcript)
 
     async def _ensure_stt_model(self) -> WhisperModel:
@@ -358,7 +516,7 @@ class VoiceChannel:
         """Run agent turn from transcript and persist outputs."""
         t0 = time.monotonic()
         try:
-            self._status("pensando...")
+            self._status("pensando...", state="thinking")
             profile_text, memories, summary, history = await self._context_builder.build_context(
                 session_id=SESSION_ID,
                 current_query=user_text,
@@ -374,6 +532,7 @@ class VoiceChannel:
             )
         except Exception as e:
             logger.error("voice_runtime_error", error=str(e))
+            self._status("fallo al ejecutar runtime", state="error")
             return
 
         elapsed = time.monotonic() - t0
@@ -382,7 +541,7 @@ class VoiceChannel:
         )
         print(f"\n[voice] you: {user_text}")
         print(f"[voice] emergent: {response_text}\n")
-        self._status("respuesta lista")
+        self._status("respuesta lista", state="responded")
         await self._speak_response(response_text)
 
         try:
@@ -404,6 +563,7 @@ class VoiceChannel:
     async def _speak_response(self, response_text: str) -> None:
         """Speak assistant response using local Piper TTS when enabled."""
         if not self._voice_settings.tts_enabled:
+            self._status("listo para siguiente turno", state="ready")
             return
 
         model_path = self._voice_settings.tts_model_path
@@ -411,19 +571,22 @@ class VoiceChannel:
             if not self._tts_warned:
                 logger.warning("voice_tts_disabled_missing_model_path")
                 self._tts_warned = True
+            self._status("TTS desactivado (falta modelo)", state="ready")
             return
 
         text = _prepare_tts_text(response_text, self._voice_settings.tts_max_chars)
         if not text:
+            self._status("listo para siguiente turno", state="ready")
             return
 
         try:
-            self._status("hablando...")
+            self._status("hablando...", state="speaking")
             await asyncio.to_thread(self._speak_with_piper, text)
-            self._status("fin de voz")
+            self._status("fin de voz", state="ready")
         except Exception as e:
             logger.error("voice_tts_failed", error=str(e))
-            self._status("fallo TTS (reviso logs)")
+            self._status("fallo TTS (reviso logs)", state="error")
+            self._status("listo para siguiente turno", state="ready")
 
     def _speak_with_piper(self, text: str) -> None:
         """Run Piper CLI and play generated WAV through default speaker."""

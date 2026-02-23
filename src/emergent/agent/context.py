@@ -52,17 +52,25 @@ class ContextBuilder:
         retriever: SemanticRetriever,
         context_budget_tokens: int = _TOTAL_CONTEXT_BUDGET,
         summarize_at_pct: float = 0.80,
+        max_history_turns: int = 12,
+        history_keep_after_summary: int = 4,
     ) -> None:
         self._store = store
         self._retriever = retriever
         self._context_budget = context_budget_tokens
         self._summarize_at_pct = summarize_at_pct
+        self._max_history_turns = max(4, int(max_history_turns))
+        self._history_keep_after_summary = max(2, int(history_keep_after_summary))
+
+    @property
+    def history_keep_after_summary(self) -> int:
+        return self._history_keep_after_summary
 
     async def build_context(
         self,
         session_id: str,
         current_query: str,
-        max_history_turns: int = 20,
+        max_history_turns: int | None = None,
     ) -> tuple[str | None, list[str] | None, str | None, list[dict[str, Any]]]:
         """
         Fetch all context components in parallel.
@@ -70,12 +78,14 @@ class ContextBuilder:
         Returns:
             (user_profile_text, semantic_memories, session_summary, history_messages)
         """
+        history_turn_limit = max_history_turns or self._max_history_turns
+
         # Fetch all in parallel with graceful degradation
         results = await asyncio.gather(
             self._store.get_profile_as_text(min_confidence=0.5),
             self._retriever.get_relevant_memories_as_text(current_query, top_k=3),
             self._store.get_session_summary(session_id),
-            self._store.get_recent_history(session_id, max_turns=max_history_turns),
+            self._store.get_recent_history(session_id, max_turns=history_turn_limit),
             return_exceptions=True,
         )
 

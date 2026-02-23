@@ -14,11 +14,30 @@ _LOGO = """\
  ╚══════╝╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝\
 """
 
-_ACCENT = "#7C3AED"  # violet
+_ACCENT = "#06B6D4"
+_GRADIENT_START = (34, 197, 94)
+_GRADIENT_END = (6, 182, 212)
 _DIM = "grey50"
 _OK = "green"
 _RULE = "grey30"
 _ERR = "red"
+
+
+def _hex_gradient(start: tuple[int, int, int], end: tuple[int, int, int], t: float) -> str:
+    r = int(start[0] + (end[0] - start[0]) * t)
+    g = int(start[1] + (end[1] - start[1]) * t)
+    b = int(start[2] + (end[2] - start[2]) * t)
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def _gradient_logo(logo: str) -> Text:
+    text = Text(logo)
+    colorable = [i for i, ch in enumerate(logo) if not ch.isspace()]
+    total = max(len(colorable) - 1, 1)
+    for pos, index in enumerate(colorable):
+        ratio = pos / total
+        text.stylize(_hex_gradient(_GRADIENT_START, _GRADIENT_END, ratio), index, index + 1)
+    return text
 
 
 def print_banner(
@@ -39,8 +58,7 @@ def print_banner(
     console.print()
 
     # Logo
-    logo_text = Text(_LOGO)
-    logo_text.stylize(_ACCENT)
+    logo_text = _gradient_logo(_LOGO)
     console.print(logo_text)
 
     console.print()
@@ -48,9 +66,9 @@ def print_banner(
     # Subtitle row
     console.print(
         f"  [bold white]v{version}[/]  "
-        f"[{_DIM}]·[/]  "
-        f"[{_DIM}]{provider}:{model}[/]  "
-        f"[{_DIM}]·[/]  "
+        f"[#06B6D4]·[/]  "
+        f"[#06B6D4]{provider}[/][white]:{model}[/]  "
+        f"[white]·[/]  "
         f"[{_DIM}]local-first autonomous agent[/]"
     )
 
@@ -71,6 +89,14 @@ def print_banner(
     _row("Scheduler", f"{scheduler_jobs} jobs loaded")
     if log_file:
         _row("Logs", log_file)
+
+    console.print()
+    console.print(
+        "  [#22C55E]Tips[/]: "
+        "[white]ESC ESC[/] salir  "
+        "[#22C55E]/skills[/] modos  "
+        "[#06B6D4]/session[/] sesiones"
+    )
 
     console.print()
 
