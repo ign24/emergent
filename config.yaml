@@ -12,6 +12,7 @@ agent:
   summary_provider: "anthropic" # "anthropic" | "openai" | "gemini" | "ollama"
   haiku_model: "claude-haiku-4-5-20251001"
   ollama_base_url: "http://127.0.0.1:11434"
+  openai_base_url: "https://api.openai.com/v1"
   max_tokens: 4096
 
   # Cost budgets (USD per session)
@@ -124,7 +125,7 @@ voice:
 research:
   enabled: true
   schedule: "30 9 * * *"
-  max_findings_per_domain: 10
+  max_findings_per_domain: 5
   highlight_threshold: 0.7
   max_highlights: 5
   web_search_provider: "tavily"

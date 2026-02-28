@@ -26,7 +26,7 @@ class TelegramConfig:
 class ResearchConfig:
     enabled: bool = True
     schedule: str = "30 9 * * *"
-    max_findings_per_domain: int = 10
+    max_findings_per_domain: int = 5
     highlight_threshold: float = 0.7
     max_highlights: int = 5
     web_search_provider: str = "tavily"
@@ -45,6 +45,7 @@ class AgentConfig:
     haiku_model: str = "claude-haiku-4-5-20251001"
     summary_provider: str = "anthropic"
     ollama_base_url: str = "http://127.0.0.1:11434"
+    openai_base_url: str = "https://api.openai.com/v1"
     max_tokens: int = 4096
     data_dir: str = "./data"
 
@@ -97,6 +98,7 @@ class _EnvSettings(BaseSettings):
     EMERGENT_HAIKU_MODEL: str = Field(default="")
     EMERGENT_SUMMARY_PROVIDER: str = Field(default="")
     EMERGENT_OLLAMA_BASE_URL: str = Field(default="")
+    EMERGENT_OPENAI_BASE_URL: str = Field(default="")
     EMERGENT_DATA_DIR: str = Field(default="")
     EMERGENT_COST_BUDGET_SOFT_USD: str = Field(default="")
     EMERGENT_COST_BUDGET_HARD_USD: str = Field(default="")
@@ -191,6 +193,8 @@ def get_settings() -> EmergentSettings:
         or agent_yaml.get("summary_provider", "anthropic"),
         ollama_base_url=env.EMERGENT_OLLAMA_BASE_URL
         or agent_yaml.get("ollama_base_url", "http://127.0.0.1:11434"),
+        openai_base_url=env.EMERGENT_OPENAI_BASE_URL
+        or agent_yaml.get("openai_base_url", "https://api.openai.com/v1"),
         max_tokens=agent_yaml.get("max_tokens", 4096),
         data_dir=env.EMERGENT_DATA_DIR or agent_yaml.get("data_dir", "./data"),
         cost_budget_soft_usd=float(
@@ -204,8 +208,7 @@ def get_settings() -> EmergentSettings:
             agent_yaml.get("fallback_providers", []),
         ),
         fallback_models=_parse_dict(agent_yaml.get("fallback_models", {})),
-        routing_mode=env.EMERGENT_ROUTING_MODE
-        or agent_yaml.get("routing_mode", "heuristic"),
+        routing_mode=env.EMERGENT_ROUTING_MODE or agent_yaml.get("routing_mode", "heuristic"),
         routing_classifier_provider=env.EMERGENT_ROUTING_CLASSIFIER_PROVIDER
         or agent_yaml.get("routing_classifier_provider", ""),
         routing_classifier_model=env.EMERGENT_ROUTING_CLASSIFIER_MODEL

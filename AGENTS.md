@@ -60,3 +60,4 @@ This file defines the working rules for AI agents editing this repository.
 3. Make minimal, focused edits that preserve module dependency direction.
 4. Run lint, type checks, and targeted tests after changes.
 5. Do not weaken safety checks, guardrails, or secret-handling rules.
+6. When selecting models for production agents, use `$llm-agent-evaluation` for weighted comparisons and pass^k-based decisions.

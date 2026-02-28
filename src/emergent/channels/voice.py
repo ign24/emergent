@@ -545,8 +545,18 @@ class VoiceChannel:
         await self._speak_response(response_text)
 
         try:
-            await self._store.save_conversation_turn(SESSION_ID, "user", user_text)
-            await self._store.save_conversation_turn(SESSION_ID, "assistant", response_text)
+            await self._store.save_conversation_turn(
+                SESSION_ID,
+                "user",
+                user_text,
+                model=self._settings.agent.model,
+            )
+            await self._store.save_conversation_turn(
+                SESSION_ID,
+                "assistant",
+                response_text,
+                model=self._settings.agent.model,
+            )
             await self._store.save_trace(trace_data)
             asyncio.create_task(
                 self._context_builder._retriever.upsert_session(

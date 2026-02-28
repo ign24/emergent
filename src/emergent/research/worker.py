@@ -48,7 +48,7 @@ class ResearchWorker:
         await self._finalize_run(run_id=run_id, findings=findings)
 
     async def run_adhoc(
-        self, topic: str, max_results: int = 10
+        self, topic: str, max_results: int = 5
     ) -> tuple[list[ScoredFinding], list[ScoredFinding]]:
         """Run ad-hoc investigation for a user-provided topic."""
         run_id = str(uuid.uuid4())[:8]

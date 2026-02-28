@@ -117,7 +117,7 @@ async def arxiv_search(
                 domain=domain,
                 title=str(getattr(entry, "title", ""))[:300],
                 url=str(getattr(entry, "link", "")),
-                summary=str(getattr(entry, "summary", ""))[:2000],
+                summary=str(getattr(entry, "summary", ""))[:600],
                 published_at=_to_datetime(getattr(entry, "published", None)),
                 metadata={"id": str(getattr(entry, "id", ""))},
             )
@@ -161,7 +161,7 @@ async def github_search(
                 domain=domain,
                 title=str(item.get("full_name", "")),
                 url=str(item.get("html_url", "")),
-                summary=str(item.get("description", ""))[:2000],
+                summary=str(item.get("description", ""))[:600],
                 published_at=_to_datetime(item.get("pushed_at")),
                 metadata={
                     "stars": int(item.get("stargazers_count", 0)),
@@ -192,7 +192,7 @@ async def github_releases(repos: list[str], *, domain: str) -> list[ResearchFind
                     domain=domain,
                     title=f"{repo} {release.get('tag_name', '')}",
                     url=str(release.get("html_url", "")),
-                    summary=str(release.get("name") or release.get("body") or "")[:2000],
+                    summary=str(release.get("name") or release.get("body") or "")[:600],
                     published_at=_to_datetime(release.get("published_at")),
                     metadata={"repo": repo, "kind": "release", "stars": 0},
                 )
@@ -226,7 +226,7 @@ async def hackernews_search(
                 domain=domain,
                 title=str(hit.get("title") or hit.get("story_title") or "")[:300],
                 url=url_value,
-                summary=str(hit.get("story_text") or hit.get("comment_text") or "")[:2000],
+                summary=str(hit.get("story_text") or hit.get("comment_text") or "")[:600],
                 published_at=_to_datetime(hit.get("created_at")),
                 metadata={"points": int(hit.get("points", 0))},
             )
@@ -273,7 +273,7 @@ async def reddit_search(
                     domain=domain,
                     title=str(data.get("title", ""))[:300],
                     url=resolved_url,
-                    summary=str(data.get("selftext", ""))[:2000],
+                    summary=str(data.get("selftext", ""))[:600],
                     published_at=datetime.fromtimestamp(float(data.get("created_utc", 0)), tz=UTC),
                     metadata={"score": int(data.get("score", 0)), "subreddit": subreddit},
                 )
@@ -305,7 +305,7 @@ async def rss_fetch(feed_urls: list[str], *, domain: str) -> list[ResearchFindin
                     domain=domain,
                     title=str(getattr(entry, "title", ""))[:300],
                     url=str(getattr(entry, "link", "")),
-                    summary=str(getattr(entry, "summary", ""))[:2000],
+                    summary=str(getattr(entry, "summary", ""))[:600],
                     published_at=_to_datetime(getattr(entry, "published", None)),
                     metadata={"feed": feed_url},
                 )
@@ -349,7 +349,7 @@ async def tavily_search(
                 domain=domain,
                 title=str(item.get("title", ""))[:300],
                 url=str(item.get("url", "")),
-                summary=str(item.get("content", ""))[:2000],
+                summary=str(item.get("content", ""))[:600],
                 published_at=None,
                 metadata={"score": float(item.get("score", 0.0))},
             )
@@ -401,7 +401,7 @@ def make_research_search_handler(
 def make_research_run_handler(worker: Any) -> Callable[..., Any]:
     async def research_run(tool_input: dict[str, Any]) -> str:
         topic = str(tool_input.get("topic", "")).strip()
-        max_results = max(1, min(int(tool_input.get("max_results", 10)), 20))
+        max_results = max(1, min(int(tool_input.get("max_results", 5)), 10))
         if not topic:
             return "Error: topic is required"
         highlights, rest = await worker.run_adhoc(topic=topic, max_results=max_results)
@@ -412,7 +412,7 @@ def make_research_run_handler(worker: Any) -> Callable[..., Any]:
                 "source": scored.finding.source,
                 "relevance_score": scored.score,
             }
-            for scored in highlights[:5]
+            for scored in highlights[:3]
         ]
         rows = top + [
             {
@@ -421,7 +421,7 @@ def make_research_run_handler(worker: Any) -> Callable[..., Any]:
                 "source": scored.finding.source,
                 "relevance_score": scored.score,
             }
-            for scored in rest[:5]
+            for scored in rest[:3]
         ]
         return await _render_research_rows(rows)
 
@@ -470,7 +470,7 @@ RESEARCH_RUN_DEFINITION = {
                 "description": "Topic to research",
                 "maxLength": 200,
             },
-            "max_results": {"type": "integer", "default": 10, "maximum": 20},
+            "max_results": {"type": "integer", "default": 5, "maximum": 10},
         },
         "required": ["topic"],
     },

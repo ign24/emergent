@@ -306,7 +306,7 @@ class TerminalChannel:
                     self._input_future = loop.run_in_executor(
                         None,
                         self._console.input,
-                        "you \u203a ",
+                        self._chat_input_prompt(),
                     )
                     user_text: str = await self._input_future
                 except KeyboardInterrupt:
@@ -456,8 +456,18 @@ class TerminalChannel:
 
         # Persist conversation
         try:
-            await self._store.save_conversation_turn(self._session_id, "user", user_text)
-            await self._store.save_conversation_turn(self._session_id, "assistant", response_text)
+            await self._store.save_conversation_turn(
+                self._session_id,
+                "user",
+                user_text,
+                model=self._settings.agent.model,
+            )
+            await self._store.save_conversation_turn(
+                self._session_id,
+                "assistant",
+                response_text,
+                model=self._settings.agent.model,
+            )
             await self._store.save_trace(trace_data)
         except Exception as e:
             log.error("persistence_failed", error=str(e))
@@ -570,7 +580,7 @@ class TerminalChannel:
                 self._active_skill = arg
                 self._console.print(f"  [{_DIM}]Skill mode enabled:[/] [white]{arg}[/]")
                 return True
-            self._console.print(f"  [yellow]Unknown skill:[/] {arg}")
+            self._console.print(f"  [{_ACCENT}]Unknown skill:[/] [white]{arg}[/]")
             self._print_skills_help()
             return True
 
@@ -896,6 +906,10 @@ class TerminalChannel:
         if limit <= 1:
             return "..."
         return f"{text[: limit - 3]}..."
+
+    def _chat_input_prompt(self) -> str:
+        """Prompt used by terminal input."""
+        return "you › "
 
     def _refresh_live_once(self) -> None:
         """Refresh live mini dashboard if active."""

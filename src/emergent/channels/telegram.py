@@ -409,8 +409,18 @@ class TelegramGateway:
 
         # Persist conversation
         try:
-            await self._store.save_conversation_turn(session_id, "user", user_text)
-            await self._store.save_conversation_turn(session_id, "assistant", response_text)
+            await self._store.save_conversation_turn(
+                session_id,
+                "user",
+                user_text,
+                model=self._settings.agent.model,
+            )
+            await self._store.save_conversation_turn(
+                session_id,
+                "assistant",
+                response_text,
+                model=self._settings.agent.model,
+            )
             await self._store.save_trace(trace_data)
         except Exception as e:
             log.error("persistence_failed", error=str(e))

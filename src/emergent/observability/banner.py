@@ -82,7 +82,7 @@ def print_banner(
     _row("ChromaDB", chroma_dir)
     _row("Terminal", f"interactive  [{_DIM}]·[/]  session=terminal_session")
     if voice_enabled:
-        _row("Voice", "push-to-talk  [grey50]·[/]  session=voice_session")
+        _row("Voice", f"push-to-talk  [{_DIM}]·[/]  session=voice_session")
     if telegram_enabled:
         suffix = "s" if allowed_users != 1 else ""
         _row("Telegram", f"polling  [{_DIM}]·[/]  {allowed_users} user{suffix} authorized")
