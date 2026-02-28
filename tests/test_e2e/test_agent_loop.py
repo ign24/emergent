@@ -1,4 +1,4 @@
-"""Live E2E tests for AgentRuntime against Anthropic API."""
+"""Live E2E tests for AgentRuntime against configured provider API."""
 
 from __future__ import annotations
 
@@ -12,11 +12,19 @@ from emergent.config import AgentConfig, EmergentSettings
 pytestmark = pytest.mark.e2e
 
 
-def _require_api_key() -> str:
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key.startswith("sk-"):
-        pytest.skip("ANTHROPIC_API_KEY is required for live e2e tests")
-    return api_key
+def _require_api_key(provider: str) -> tuple[str, str, str]:
+    provider_to_env = {
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+    }
+    env_name = provider_to_env.get(provider)
+    if env_name is None:
+        return "", "", ""
+    api_key = os.getenv(env_name, "").strip()
+    if not api_key:
+        pytest.skip(f"{env_name} is required for live e2e tests when provider={provider}")
+    return env_name, api_key, provider
 
 
 def _provider() -> str:
@@ -26,9 +34,11 @@ def _provider() -> str:
 @pytest.mark.asyncio
 async def test_live_round_trip_text_response() -> None:
     provider = _provider()
-    api_key = _require_api_key() if provider == "anthropic" else ""
+    env_name, api_key, key_provider = _require_api_key(provider)
     settings = EmergentSettings(
-        anthropic_api_key=api_key,
+        anthropic_api_key=api_key if key_provider == "anthropic" else "",
+        openai_api_key=api_key if key_provider == "openai" else "",
+        gemini_api_key=api_key if key_provider == "gemini" else "",
         agent=AgentConfig(
             provider=provider,
             model=os.getenv("EMERGENT_E2E_MODEL", "claude-haiku-4-5-20251001"),
@@ -36,6 +46,8 @@ async def test_live_round_trip_text_response() -> None:
             max_tokens=128,
         ),
     )
+    if env_name:
+        os.environ[env_name] = api_key
     runtime = AgentRuntime(settings=settings)
     try:
         text, trace = await runtime.run(
@@ -54,9 +66,11 @@ async def test_live_round_trip_text_response() -> None:
 @pytest.mark.expensive
 async def test_live_latency_budget_under_60s() -> None:
     provider = _provider()
-    api_key = _require_api_key() if provider == "anthropic" else ""
+    env_name, api_key, key_provider = _require_api_key(provider)
     settings = EmergentSettings(
-        anthropic_api_key=api_key,
+        anthropic_api_key=api_key if key_provider == "anthropic" else "",
+        openai_api_key=api_key if key_provider == "openai" else "",
+        gemini_api_key=api_key if key_provider == "gemini" else "",
         agent=AgentConfig(
             provider=provider,
             model=os.getenv("EMERGENT_E2E_MODEL", "claude-haiku-4-5-20251001"),
@@ -64,6 +78,8 @@ async def test_live_latency_budget_under_60s() -> None:
             max_tokens=128,
         ),
     )
+    if env_name:
+        os.environ[env_name] = api_key
     runtime = AgentRuntime(settings=settings)
     try:
         text, trace = await runtime.run(

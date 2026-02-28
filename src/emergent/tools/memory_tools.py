@@ -10,6 +10,7 @@ import structlog
 from emergent import SafetyViolationError
 from emergent.memory.retriever import SemanticRetriever
 from emergent.memory.store import MemoryStore
+from emergent.tools.registry import ToolDefinitionDict
 
 logger = structlog.get_logger(__name__)
 
@@ -101,7 +102,7 @@ def make_memory_store_handler(store: MemoryStore) -> Any:
     return memory_store
 
 
-MEMORY_SEARCH_DEFINITION = {
+MEMORY_SEARCH_DEFINITION: ToolDefinitionDict = {
     "name": "memory_search",
     "description": (
         "Search semantic memory for relevant past information. "
@@ -129,7 +130,7 @@ MEMORY_SEARCH_DEFINITION = {
     },
 }
 
-MEMORY_STORE_DEFINITION = {
+MEMORY_STORE_DEFINITION: ToolDefinitionDict = {
     "name": "memory_store",
     "description": (
         "Store a fact or preference in long-term memory with a descriptive key. "

@@ -11,6 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from emergent import SafetyViolationError
+from emergent.tools.registry import ToolDefinitionDict
 
 logger = structlog.get_logger(__name__)
 
@@ -35,10 +36,14 @@ def init_scheduler(
     global _scheduler, _run_callback
     _run_callback = run_callback
 
+    from apscheduler.jobstores.memory import MemoryJobStore
     from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
     _scheduler = AsyncIOScheduler(
-        jobstores={"default": SQLAlchemyJobStore(url=db_url)},
+        jobstores={
+            "default": SQLAlchemyJobStore(url=db_url),
+            "volatile": MemoryJobStore(),
+        },
     )
     logger.info("scheduler_initialized", db_url=db_url, has_callback=run_callback is not None)
     return _scheduler
@@ -136,7 +141,11 @@ async def _create_job(tool_input: dict[str, Any]) -> str:
     if not scheduler.running:
         scheduler.start()
 
-    persistence = "con persistencia SQLite" if hasattr(scheduler, "_jobstores") and "default" in scheduler._jobstores else "en memoria"
+    persistence = (
+        "con persistencia SQLite"
+        if hasattr(scheduler, "_jobstores") and "default" in scheduler._jobstores
+        else "en memoria"
+    )
     logger.info("cron_job_created", job_id=job_id, cron=cron_expr, prompt=prompt[:50])
     return f"Job '{job_id}' creado ({persistence}) con cron '{cron_expr}'."
 
@@ -156,11 +165,13 @@ def _delete_job(tool_input: dict[str, Any]) -> str:
     return f"Job '{job_id}' eliminado."
 
 
-TOOL_DEFINITION = {
+TOOL_DEFINITION: ToolDefinitionDict = {
     "name": "cron_schedule",
     "description": (
         "Create, list, or delete scheduled cron jobs. "
         "Jobs run the agent with a predefined prompt at the scheduled time. "
+        "If prompt includes research cues (e.g. 'research:' or 'investigacion'), "
+        "the dedicated research worker is executed. "
         "Cron prompts must be read-only in intent (no destructive actions). "
         "Minimum interval: every 5 minutes. "
         "Actions: 'create' (TIER_2, needs confirmation), 'list' (TIER_1), 'delete' (TIER_2)."
@@ -175,7 +186,9 @@ TOOL_DEFINITION = {
             },
             "job_id": {
                 "type": "string",
-                "description": "Job identifier (for create/delete). Auto-generated if not provided.",
+                "description": (
+                    "Job identifier (for create/delete). Auto-generated if not provided."
+                ),
             },
             "cron_expression": {
                 "type": "string",

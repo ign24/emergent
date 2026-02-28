@@ -1,10 +1,24 @@
-.PHONY: run install update test test-unit test-integration test-e2e test-security lint typecheck dashboard triage clean
+.PHONY: setup run install install-user install-ubuntu voice-check update test test-unit test-integration test-e2e test-security lint typecheck dashboard triage clean
+
+setup:
+	bash scripts/bootstrap.sh --voice
 
 run:
 	uv run python -m emergent
 
 install:
 	uv sync
+
+install-user:
+	uv tool install .
+
+install-ubuntu:
+	sudo apt update
+	sudo apt install -y libportaudio2 portaudio19-dev pulseaudio-utils alsa-utils
+	uv tool install .
+
+voice-check:
+	uv run python scripts/voice_check.py
 
 update:
 	git pull --ff-only

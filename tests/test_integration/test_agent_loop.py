@@ -227,6 +227,29 @@ async def test_history_is_passed_to_llm() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_enables_stream_mode_when_callback_is_provided() -> None:
+    settings = _make_settings()
+    runtime = AgentRuntime(settings=settings)
+    try:
+        with patch.object(
+            runtime,
+            "_call_with_retry",
+            new=AsyncMock(return_value=_make_text_response("stream ok")),
+        ) as call_with_retry:
+            await runtime.run(
+                user_message="Hola",
+                session_id="test-session",
+                on_text_delta=AsyncMock(),
+            )
+
+        await_args = call_with_retry.await_args
+        assert await_args is not None
+        assert await_args.kwargs["stream"] is True
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_retry_on_rate_limit() -> None:
     settings = _make_settings()
     runtime = AgentRuntime(settings=settings)
@@ -256,6 +279,7 @@ async def test_retry_on_rate_limit() -> None:
 @pytest.mark.asyncio
 async def test_api_error_returns_graceful_message() -> None:
     settings = _make_settings()
+    settings.agent.fallback_providers = []  # disable fallback to test error path
     runtime = AgentRuntime(settings=settings)
     try:
 
@@ -282,3 +306,110 @@ async def test_runtime_close_closes_http_client() -> None:
     await runtime.close()
 
     runtime._client.close.assert_awaited_once()  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_routing_uses_fast_model_for_simple_command() -> None:
+    settings = _make_settings()
+    settings.agent.routing_enabled = True
+    settings.agent.fast_model = "claude-haiku-4-5-20251001"
+    settings.agent.strong_model = "claude-sonnet-4-20250514"
+    settings.agent.model = "claude-sonnet-4-20250514"
+    runtime = AgentRuntime(settings=settings)
+
+    captured: dict[str, Any] = {}
+
+    async def _capture(*, client: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return _make_text_response("ok")
+
+    try:
+        with patch.object(runtime, "_call_with_retry", new=_capture):
+            _, trace = await runtime.run(user_message="ls", session_id="test-session")
+
+        assert captured["model"] == "claude-haiku-4-5-20251001"
+        assert trace["model_tier"] == "fast"
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_routing_does_not_use_fast_model_for_natural_language() -> None:
+    settings = _make_settings()
+    settings.agent.routing_enabled = True
+    settings.agent.fast_model = "claude-haiku-4-5-20251001"
+    settings.agent.model = "claude-sonnet-4-20250514"
+    runtime = AgentRuntime(settings=settings)
+
+    captured: dict[str, Any] = {}
+
+    async def _capture(*, client: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return _make_text_response("ok")
+
+    try:
+        with patch.object(runtime, "_call_with_retry", new=_capture):
+            _, trace = await runtime.run(
+                user_message="En una frase, para que sirve 'ls' en terminal",
+                session_id="test-session",
+            )
+
+        assert captured["model"] == "claude-sonnet-4-20250514"
+        assert trace["model_tier"] == "default"
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_routing_uses_strong_model_for_complex_prompt() -> None:
+    settings = _make_settings()
+    settings.agent.routing_enabled = True
+    settings.agent.fast_model = "claude-haiku-4-5-20251001"
+    settings.agent.strong_model = "claude-sonnet-4-20250514"
+    settings.agent.model = "claude-haiku-4-5-20251001"
+    runtime = AgentRuntime(settings=settings)
+
+    captured: dict[str, Any] = {}
+
+    async def _capture(*, client: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return _make_text_response("ok")
+
+    try:
+        with patch.object(runtime, "_call_with_retry", new=_capture):
+            _, trace = await runtime.run(
+                user_message="analiza y refactoriza este modulo con workers",
+                session_id="test-session",
+            )
+
+        assert captured["model"] == "claude-sonnet-4-20250514"
+        assert trace["model_tier"] == "strong"
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_routing_does_not_escalate_on_single_strong_keyword() -> None:
+    settings = _make_settings()
+    settings.agent.routing_enabled = True
+    settings.agent.fast_model = "claude-haiku-4-5-20251001"
+    settings.agent.strong_model = "claude-sonnet-4-20250514"
+    settings.agent.model = "claude-haiku-4-5-20251001"
+    runtime = AgentRuntime(settings=settings)
+
+    captured: dict[str, Any] = {}
+
+    async def _capture(*, client: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return _make_text_response("ok")
+
+    try:
+        with patch.object(runtime, "_call_with_retry", new=_capture):
+            _, trace = await runtime.run(
+                user_message="analiza este modulo", session_id="test-session"
+            )
+
+        assert captured["model"] == "claude-haiku-4-5-20251001"
+        assert trace["model_tier"] == "default"
+    finally:
+        await runtime.close()

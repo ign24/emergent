@@ -1,0 +1,13 @@
+# Prompt set for controlled A/B benchmark
+# Keep this exact order for both scenarios
+
+ls
+pwd
+mostrame el estado del sistema en 3 bullets
+lista los archivos del directorio actual
+explica en una frase para que sirve este proyecto
+analiza este enfoque: orquestador con workers especializados
+propone un plan de 5 pasos para depurar latencia alta
+compara pros y contras de usar un modelo barato como default
+escribi un resumen corto de la conversacion hasta ahora
+que riesgos de seguridad hay al ejecutar comandos desde telegram

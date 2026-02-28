@@ -6,7 +6,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, TypedDict
 
 import structlog
 
@@ -34,6 +34,12 @@ class ToolDefinition:
     handler: Callable[..., Awaitable[str]]
     safety_tier: SafetyTier
     timeout: int = 30
+
+
+class ToolDefinitionDict(TypedDict):
+    name: str
+    description: str
+    input_schema: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------

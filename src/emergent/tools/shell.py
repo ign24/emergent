@@ -11,6 +11,7 @@ from typing import Any
 import structlog
 
 from emergent import SafetyViolationError
+from emergent.tools.registry import ToolDefinitionDict
 
 logger = structlog.get_logger(__name__)
 
@@ -89,14 +90,6 @@ async def shell_execute(tool_input: dict[str, Any]) -> str:
         duration_ms=duration_ms,
     )
 
-    result: dict[str, Any] = {
-        "stdout": stdout,
-        "stderr": stderr,
-        "exit_code": exit_code,
-        "duration_ms": duration_ms,
-        "truncated": truncated,
-    }
-
     # Format as readable text for Claude
     parts: list[str] = []
     if stdout:
@@ -111,13 +104,14 @@ async def shell_execute(tool_input: dict[str, Any]) -> str:
     return "\n".join(parts) if parts else "(no output)"
 
 
-TOOL_DEFINITION = {
+TOOL_DEFINITION: ToolDefinitionDict = {
     "name": "shell_execute",
     "description": (
         "Execute a bash command on the host system and return stdout/stderr. "
         "Read-only commands (ls, cat, ps, grep, df, docker ps, git status, etc.) "
         "are executed automatically. "
-        "Write commands (kill, rm, mv, docker restart, pip install, etc.) require user confirmation. "
+        "Write commands (kill, rm, mv, docker restart, pip install, etc.) "
+        "require user confirmation. "
         "Destructive commands (sudo, rm -rf, curl|bash) are always blocked. "
         "Output is truncated at 10,000 chars. Timeout: 30s default, max 120s."
     ),
