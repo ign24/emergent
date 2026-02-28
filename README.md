@@ -20,7 +20,7 @@ It can execute shell commands, manage files, browse the web, inspect system stat
 - **No-framework agent loop**: custom ReAct-style runtime using native `tool_use`
 - **Deterministic safety classifier**: regex-based tiering before every tool call (no LLM in safety path)
 - **Multi-channel UX**: terminal + Telegram + optional voice channel
-- **Provider flexibility**: Anthropic and Ollama support for both runtime and summarization
+- **Provider flexibility**: Anthropic, OpenAI, Gemini, and Ollama support for runtime and summarization
 - **Persistent memory**: SQLite (WAL) + ChromaDB + session summaries
 - **Proactive cron jobs**: persistent scheduler backed by SQLite
 - **Structured observability**: JSON logs with trace IDs, latency, token, and cost signals
@@ -33,7 +33,7 @@ flowchart LR
   Telegram --> TelegramGateway --> AgentRuntime
   Voice --> AgentRuntime
   AgentRuntime --> ContextBuilder
-  AgentRuntime --> LLMProvider["Anthropic / Ollama"]
+  AgentRuntime --> LLMProvider["Anthropic / OpenAI / Gemini / Ollama"]
   AgentRuntime --> ToolRegistry
   ContextBuilder --> SQLite["SQLite L0 (WAL)"]
   ContextBuilder --> ChromaDB["ChromaDB L1"]
@@ -108,26 +108,63 @@ These values are verified at startup and are not user-modifiable at runtime.
   - Anthropic API key, or
   - local Ollama server
 - Optional for Telegram channel: bot token + allowed user IDs
-- Optional for voice channel: local audio stack + push-to-talk key setup
+- Optional for voice channel: local audio stack (PortAudio)
 
 ### Setup
+
+One-command setup (recommended):
 
 ```bash
 git clone <repo-url> emergent
 cd emergent
-uv tool install .
+make setup
+```
+
+This installs `uv` (if missing), installs Ubuntu audio deps for voice,
+installs/reinstalls Emergent, creates `.env` from `.env.example` when needed,
+and runs a quick voice diagnostic.
+
+Use this command map:
+
+| Goal | Command |
+|------|---------|
+| First install (recommended) | `make setup` |
+| Update existing install | `make update` |
+| Install without voice deps | `bash scripts/bootstrap.sh --no-voice` |
+| Voice diagnostics only | `make voice-check` |
+
+If you do not want voice dependencies, run:
+
+```bash
+bash scripts/bootstrap.sh --no-voice
+```
+
+Alternative manual setup:
+
+```bash
+git clone <repo-url> emergent
+cd emergent
+make install-user
 cp .env.example .env
+```
+
+Ubuntu + voice ready install (manual):
+
+```bash
+make install-ubuntu
 ```
 
 Edit `.env`:
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-proj-...                   # optional (provider=openai)
+GEMINI_API_KEY=AIza...                       # optional (provider=gemini)
 TELEGRAM_BOT_TOKEN=123456:ABC-...            # optional
 TELEGRAM_ALLOWED_USER_IDS=123456789          # optional
 
 # Optional overrides
-# EMERGENT_PROVIDER=anthropic                # anthropic | ollama
+# EMERGENT_PROVIDER=anthropic                # anthropic | openai | gemini | ollama
 # EMERGENT_MODEL=claude-sonnet-4-20250514
 # EMERGENT_SUMMARY_PROVIDER=ollama
 # EMERGENT_OLLAMA_BASE_URL=http://127.0.0.1:11434
@@ -164,20 +201,30 @@ Run `emergent` and start chatting immediately in the terminal.
 Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USER_IDS` in `.env`.
 When set, Emergent starts Telegram polling in parallel with terminal mode.
 
-### Voice push-to-talk (optional)
+### Voice mode (optional)
 
 Enable in `config.yaml`:
 
 ```yaml
 voice:
   enabled: true
-  ptt_key: "f24"
   stt_model: "small"
   stt_language: "es"
   tts_enabled: false
 ```
 
-Voice input uses local `faster-whisper` transcription and can optionally synthesize responses via Piper.
+Voice input uses local `faster-whisper` transcription, `webrtcvad` for automatic
+speech/silence detection, and can optionally synthesize responses via Piper.
+
+- `/voice` enables continuous hands-free mode
+- `/voice-off` returns to text mode
+- `/voice 5` captures a single 5-second turn (debug/fallback)
+
+Run diagnostics before using voice:
+
+```bash
+make voice-check
+```
 
 ## Testing Pyramid
 
@@ -258,10 +305,15 @@ make triage
 pkill -f "emergent" && sleep 2 && emergent
 ```
 
-### Missing Anthropic key error
+### Missing provider API key error
 
-If `provider=anthropic`, set `ANTHROPIC_API_KEY` in `.env`.
-If you want local mode, set `EMERGENT_PROVIDER=ollama` and run Ollama.
+Set the key that matches your configured provider:
+
+- `provider=anthropic` -> `ANTHROPIC_API_KEY`
+- `provider=openai` -> `OPENAI_API_KEY`
+- `provider=gemini` -> `GEMINI_API_KEY`
+
+For local mode, set `EMERGENT_PROVIDER=ollama` and run Ollama.
 
 ### Telegram bot does not answer
 
@@ -269,7 +321,15 @@ Verify your Telegram user ID is in `TELEGRAM_ALLOWED_USER_IDS` and check logs fo
 
 ### Voice does not trigger
 
-Check `voice.enabled: true`, confirm your `ptt_key`/`ptt_scan_code`, and verify local audio permissions.
+Check `voice.enabled: true`, run from terminal mode, and verify local audio permissions.
+
+If you see `PortAudio library not found`:
+
+```bash
+sudo apt update
+sudo apt install -y libportaudio2 portaudio19-dev pulseaudio-utils alsa-utils
+make voice-check
+```
 
 ## Security Notes
 

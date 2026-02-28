@@ -6,8 +6,10 @@ import asyncio
 import signal
 import sys
 from pathlib import Path
+from typing import Any
 
 import structlog
+from apscheduler.triggers.cron import CronTrigger
 
 logger = structlog.get_logger(__name__)
 
@@ -47,6 +49,7 @@ async def _run() -> None:
     from emergent.channels.telegram import TelegramGateway
     from emergent.memory.retriever import SemanticRetriever
     from emergent.memory.store import MemoryStore
+    from emergent.research.worker import ResearchWorker
     from emergent.tools import ExecutionContext, create_registry
     from emergent.tools.cron import TOOL_DEFINITION as CRON_TOOL_DEF
     from emergent.tools.cron import cron_schedule, init_scheduler
@@ -57,6 +60,12 @@ async def _run() -> None:
         make_memory_store_handler,
     )
     from emergent.tools.registry import SafetyTier, ToolDefinition
+    from emergent.tools.research import (
+        RESEARCH_RUN_DEFINITION,
+        RESEARCH_SEARCH_DEFINITION,
+        make_research_run_handler,
+        make_research_search_handler,
+    )
 
     store = MemoryStore(db_path)
     retriever = SemanticRetriever(chroma_dir)
@@ -65,6 +74,8 @@ async def _run() -> None:
         retriever=retriever,
         context_budget_tokens=mem_cfg.get("context_budget_tokens", 20000),
         summarize_at_pct=mem_cfg.get("summarize_at_pct", 0.80),
+        max_history_turns=mem_cfg.get("max_history_turns", 12),
+        history_keep_after_summary=mem_cfg.get("history_keep_after_summary", 4),
     )
 
     # Build tool registry
@@ -123,10 +134,14 @@ async def _run() -> None:
             notifier=notifier,
         )
 
+    # Optional research worker reference used by cron callback.
+    research_worker: ResearchWorker | None = None
+
     # Voice channel (optional, local-first push-to-talk)
     voice_cfg = settings.voice or {}
     voice_enabled = bool(voice_cfg.get("enabled", False))
     voice_channel = None
+    terminal.set_voice_status("off", "desactivado")
     if voice_enabled:
         try:
             from emergent.channels.voice import VoiceChannel
@@ -136,22 +151,53 @@ async def _run() -> None:
                 runtime=runtime,
                 store=store,
                 context_builder=context_builder,
+                status_callback=terminal.set_voice_status,
             )
+            terminal.set_voice_channel(voice_channel)
+            terminal.set_voice_status("starting", "canal de voz iniciando")
         except Exception as e:
             log.error("voice_channel_init_failed", error=str(e))
             voice_enabled = False
+            terminal.set_voice_status("error", "no se pudo inicializar")
 
     # --- Cron callback: runs a prompt headlessly and notifies via Telegram ---
     async def _cron_run_callback(prompt: str) -> str:
         log.info("cron_callback_invoked", prompt=prompt[:60])
-        try:
-            response_text, _ = await runtime.run(
-                user_message=prompt,
-                session_id="cron_headless",
-            )
-        except Exception as e:
-            log.error("cron_callback_runtime_error", error=str(e))
-            response_text = f"[cron] Error al ejecutar: {e}"
+        prompt_lower = prompt.lower()
+        research_triggers = (
+            "research:",
+            "investigacion",
+            "investigación",
+            "investigar",
+            "research job",
+        )
+        should_run_research = any(trigger in prompt_lower for trigger in research_triggers)
+
+        if should_run_research and research_worker is not None:
+            topic = prompt
+            if prompt_lower.startswith("research:"):
+                topic = prompt.split(":", 1)[1].strip() or "emergent improvements"
+            try:
+                highlights, rest = await research_worker.run_adhoc(
+                    topic=topic,
+                    max_results=settings.research.max_findings_per_domain,
+                )
+                response_text = (
+                    "[cron] Research job completado. "
+                    f"highlights={len(highlights)} rest={len(rest)} topic='{topic[:80]}'"
+                )
+            except Exception as e:
+                log.error("cron_callback_research_error", error=str(e), topic=topic[:80])
+                response_text = f"[cron] Error al ejecutar research job: {e}"
+        else:
+            try:
+                response_text, _ = await runtime.run(
+                    user_message=prompt,
+                    session_id="cron_headless",
+                )
+            except Exception as e:
+                log.error("cron_callback_runtime_error", error=str(e))
+                response_text = f"[cron] Error al ejecutar: {e}"
 
         # Notify all allowed users via Telegram (only if gateway exists)
         if gateway is not None:
@@ -168,7 +214,7 @@ async def _run() -> None:
         return response_text
 
     # Add cron tool (wired with callback)
-    async def _cron_handler(tool_input: dict) -> str:
+    async def _cron_handler(tool_input: dict[str, Any]) -> str:
         return await cron_schedule(tool_input)
 
     registry.register(
@@ -194,6 +240,7 @@ async def _run() -> None:
         id="maintenance_cleanup",
         name="cleanup_old_data",
         replace_existing=True,
+        jobstore="volatile",
     )
     scheduler.add_job(
         store.decay_profile_confidence,
@@ -204,7 +251,50 @@ async def _run() -> None:
         id="maintenance_decay",
         name="decay_profile_confidence",
         replace_existing=True,
+        jobstore="volatile",
     )
+
+    # Research worker + tool wiring
+    research_cfg = settings.research
+    if research_cfg.enabled:
+        research_worker = ResearchWorker(
+            store=store,
+            retriever=retriever,
+            settings=settings,
+            telegram_notify=gateway,
+        )
+        try:
+            trigger = CronTrigger.from_crontab(research_cfg.schedule)
+            scheduler.add_job(
+                research_worker.run,
+                trigger=trigger,
+                id="research_daily",
+                name="daily_research",
+                replace_existing=True,
+                jobstore="volatile",
+            )
+        except Exception as e:
+            log.error("research_schedule_invalid", schedule=research_cfg.schedule, error=str(e))
+
+        registry.register(
+            ToolDefinition(
+                name="research_search",
+                description=RESEARCH_SEARCH_DEFINITION["description"],
+                input_schema=RESEARCH_SEARCH_DEFINITION["input_schema"],
+                handler=make_research_search_handler(store, retriever),
+                safety_tier=SafetyTier.TIER_1_AUTO,
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name="research_run",
+                description=RESEARCH_RUN_DEFINITION["description"],
+                input_schema=RESEARCH_RUN_DEFINITION["input_schema"],
+                handler=make_research_run_handler(research_worker),
+                safety_tier=SafetyTier.TIER_2_CONFIRM,
+            )
+        )
+
     scheduler.start()
     terminal.set_scheduler_jobs(len(scheduler.get_jobs()))
     log.info("scheduler_started", persistent_db=db_url)
@@ -226,7 +316,7 @@ async def _run() -> None:
 
     print_banner(
         version="0.1.0",
-        provider=settings.agent.provider,
+        provider="AUTO" if settings.agent.routing_enabled else settings.agent.provider,
         model=settings.agent.model,
         db_path=str(db_path),
         chroma_dir=str(chroma_dir),
@@ -237,14 +327,15 @@ async def _run() -> None:
         voice_enabled=voice_enabled,
     )
 
+    if voice_channel is not None:
+        await voice_channel.start()
+
     try:
         tasks: list[asyncio.Task[None]] = [
             asyncio.create_task(terminal.start(), name="terminal"),
         ]
         if gateway is not None:
             tasks.append(asyncio.create_task(gateway.start(), name="telegram"))
-        if voice_channel is not None:
-            tasks.append(asyncio.create_task(voice_channel.start(), name="voice"))
         channel_tasks = tasks
 
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

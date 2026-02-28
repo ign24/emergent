@@ -9,15 +9,16 @@ from typing import Any
 import httpx
 
 from emergent import LLMProviderError, LLMRetryableError
-from emergent.llm.client import LLMClient
+from emergent.llm.client import LLMClient, TextDeltaCallback
 from emergent.llm.models import LLMResponse, LLMTextBlock, LLMToolUseBlock, LLMUsage
 
 
 class OllamaLLMClient(LLMClient):
     """Adapter over Ollama /api/chat using non-streaming responses."""
 
-    def __init__(self, base_url: str) -> None:
-        self._client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=60.0)
+    def __init__(self, base_url: str, timeout: float = 180.0) -> None:
+        # 180s default accounts for cold-start model loading on CPU
+        self._client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout)
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -41,6 +42,7 @@ class OllamaLLMClient(LLMClient):
             "messages": payload_messages,
             "stream": False,
             "options": {"num_predict": max_tokens},
+            "keep_alive": "1h",
         }
         if tools:
             payload["tools"] = [
@@ -95,3 +97,27 @@ class OllamaLLMClient(LLMClient):
                 output_tokens=int(data.get("eval_count") or 0),
             ),
         )
+
+    async def stream_complete(
+        self,
+        *,
+        model: str,
+        system: str,
+        messages: Sequence[dict[str, Any]],
+        max_tokens: int,
+        on_text_delta: TextDeltaCallback,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        response = await self.complete(
+            model=model,
+            system=system,
+            messages=messages,
+            max_tokens=max_tokens,
+            tools=tools,
+        )
+
+        for block in response.content:
+            if isinstance(block, LLMTextBlock) and block.text:
+                await on_text_delta(block.text)
+
+        return response
