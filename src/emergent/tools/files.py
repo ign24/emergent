@@ -12,6 +12,7 @@ from typing import Any
 import structlog
 
 from emergent import SafetyViolationError
+from emergent.tools.registry import ToolDefinitionDict
 
 logger = structlog.get_logger(__name__)
 
@@ -49,7 +50,9 @@ def _resolve_path(path_str: str) -> Path:
     try:
         resolved.relative_to(SANDBOX_ROOT)
     except ValueError:
-        raise SafetyViolationError(f"OUTSIDE_SANDBOX: path '{path_str}' resolves outside $HOME")
+        raise SafetyViolationError(
+            f"OUTSIDE_SANDBOX: path '{path_str}' resolves outside $HOME"
+        ) from None
 
     # Block '..' traversal attempts
     if ".." in Path(path_str).parts:
@@ -57,8 +60,6 @@ def _resolve_path(path_str: str) -> Path:
 
     # Check sensitive paths
     path_lower = str(resolved).lower()
-    rel_str = str(resolved.relative_to(SANDBOX_ROOT)).lower()
-
     for sensitive in _SENSITIVE_PATTERNS:
         if sensitive.lower() in path_lower:
             logger.warning("sensitive_path_blocked", path=str(resolved), pattern=sensitive)
@@ -91,7 +92,7 @@ async def file_read(tool_input: dict[str, Any]) -> str:
         size_bytes = resolved.stat().st_size
         content = resolved.read_text(errors="replace")
     except PermissionError:
-        raise SafetyViolationError(f"PERMISSION_DENIED: cannot read '{resolved}'")
+        raise SafetyViolationError(f"PERMISSION_DENIED: cannot read '{resolved}'") from None
 
     truncated = False
     if len(content) > max_chars:
@@ -141,13 +142,13 @@ async def file_write(tool_input: dict[str, Any]) -> str:
         else:
             action = "unknown"
     except PermissionError:
-        raise SafetyViolationError(f"PERMISSION_DENIED: cannot write '{resolved}'")
+        raise SafetyViolationError(f"PERMISSION_DENIED: cannot write '{resolved}'") from None
 
     logger.info("file_write", path=str(resolved), mode=mode, bytes_written=len(content.encode()))
     return f"File {action}: {resolved} ({len(content.encode())} bytes)"
 
 
-FILE_READ_DEFINITION = {
+FILE_READ_DEFINITION: ToolDefinitionDict = {
     "name": "file_read",
     "description": (
         "Read the content of a file. Path is relative to $HOME. "
@@ -171,7 +172,7 @@ FILE_READ_DEFINITION = {
     },
 }
 
-FILE_WRITE_DEFINITION = {
+FILE_WRITE_DEFINITION: ToolDefinitionDict = {
     "name": "file_write",
     "description": (
         "Create or write a file in $HOME. Requires user confirmation if file already exists. "
@@ -256,7 +257,7 @@ async def list_directory(tool_input: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-LIST_DIRECTORY_DEFINITION = {
+LIST_DIRECTORY_DEFINITION: ToolDefinitionDict = {
     "name": "list_directory",
     "description": (
         "List contents of a directory in $HOME. "
@@ -337,7 +338,7 @@ async def directory_tree(tool_input: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-DIRECTORY_TREE_DEFINITION = {
+DIRECTORY_TREE_DEFINITION: ToolDefinitionDict = {
     "name": "directory_tree",
     "description": (
         "Show a recursive directory tree with configurable depth. "
@@ -407,7 +408,7 @@ async def search_files(tool_input: dict[str, Any]) -> str:
     return header + "\n".join(results)
 
 
-SEARCH_FILES_DEFINITION = {
+SEARCH_FILES_DEFINITION: ToolDefinitionDict = {
     "name": "search_files",
     "description": (
         "Search for files matching a glob pattern recursively. "
@@ -513,7 +514,7 @@ async def search_in_files(tool_input: dict[str, Any]) -> str:
     return header + "\n".join(matches)
 
 
-SEARCH_IN_FILES_DEFINITION = {
+SEARCH_IN_FILES_DEFINITION: ToolDefinitionDict = {
     "name": "search_in_files",
     "description": (
         "Search for text or regex patterns inside files (like grep). "
@@ -596,7 +597,7 @@ async def file_info(tool_input: dict[str, Any]) -> str:
     return "\n".join(info_lines)
 
 
-FILE_INFO_DEFINITION = {
+FILE_INFO_DEFINITION: ToolDefinitionDict = {
     "name": "file_info",
     "description": (
         "Get metadata about a file or directory: type, size, permissions, "
@@ -651,7 +652,7 @@ async def file_move(tool_input: dict[str, Any]) -> str:
     return f"Moved: {source} → {destination}"
 
 
-FILE_MOVE_DEFINITION = {
+FILE_MOVE_DEFINITION: ToolDefinitionDict = {
     "name": "file_move",
     "description": (
         "Move or rename a file or directory within $HOME. "
@@ -721,7 +722,7 @@ async def file_delete(tool_input: dict[str, Any]) -> str:
         raise SafetyViolationError(f"PERMISSION_DENIED: cannot delete '{resolved}'") from err
 
 
-FILE_DELETE_DEFINITION = {
+FILE_DELETE_DEFINITION: ToolDefinitionDict = {
     "name": "file_delete",
     "description": (
         "Delete a file or directory within $HOME. "

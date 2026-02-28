@@ -131,7 +131,7 @@ def _parse_user_ids(raw: str) -> list[int]:
     return [int(x.strip()) for x in raw.split(",") if x.strip()]
 
 
-def _parse_dict(raw: dict | Any) -> dict[str, str]:
+def _parse_dict(raw: dict[str, Any] | Any) -> dict[str, str]:
     if isinstance(raw, dict):
         return {str(k).strip(): str(v).strip() for k, v in raw.items() if k and v}
     return {}

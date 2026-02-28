@@ -11,6 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from emergent import SafetyViolationError
+from emergent.tools.registry import ToolDefinitionDict
 
 logger = structlog.get_logger(__name__)
 
@@ -164,7 +165,7 @@ def _delete_job(tool_input: dict[str, Any]) -> str:
     return f"Job '{job_id}' eliminado."
 
 
-TOOL_DEFINITION = {
+TOOL_DEFINITION: ToolDefinitionDict = {
     "name": "cron_schedule",
     "description": (
         "Create, list, or delete scheduled cron jobs. "

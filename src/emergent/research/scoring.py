@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 from emergent.research.types import ResearchFinding, ScoredFinding
 
@@ -16,7 +17,7 @@ SOURCE_AUTHORITY: dict[str, float] = {
 }
 
 
-def _normalize_engagement(source: str, metadata: dict[str, object]) -> float:
+def _normalize_engagement(source: str, metadata: dict[str, Any]) -> float:
     if source == "github":
         stars = int(metadata.get("stars", 0))
         return min(1.0, stars / 1000)

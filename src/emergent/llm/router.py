@@ -9,12 +9,9 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import structlog
-
-if TYPE_CHECKING:
-    from emergent.llm.client import LLMClient
 
 logger = structlog.get_logger(__name__)
 
@@ -74,7 +71,12 @@ class PromptRouter:
             tier, ts = cached_entry
             if (time.monotonic() - ts) < _CACHE_TTL_SECONDS:
                 latency = (time.monotonic() - t0) * 1000
-                return ClassificationResult(tier=tier, cached=True, latency_ms=latency, cost_usd=0.0)
+                return ClassificationResult(
+                    tier=tier,
+                    cached=True,
+                    latency_ms=latency,
+                    cost_usd=0.0,
+                )
             # Expired
             del self._cache[cache_key]
 

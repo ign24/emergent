@@ -6,6 +6,7 @@ import asyncio
 import signal
 import sys
 from pathlib import Path
+from typing import Any
 
 import structlog
 from apscheduler.triggers.cron import CronTrigger
@@ -213,7 +214,7 @@ async def _run() -> None:
         return response_text
 
     # Add cron tool (wired with callback)
-    async def _cron_handler(tool_input: dict) -> str:
+    async def _cron_handler(tool_input: dict[str, Any]) -> str:
         return await cron_schedule(tool_input)
 
     registry.register(

@@ -549,13 +549,13 @@ class VoiceChannel:
                 SESSION_ID,
                 "user",
                 user_text,
-                model=self._settings.agent.model,
+                model=self._app_settings.agent.model,
             )
             await self._store.save_conversation_turn(
                 SESSION_ID,
                 "assistant",
                 response_text,
-                model=self._settings.agent.model,
+                model=self._app_settings.agent.model,
             )
             await self._store.save_trace(trace_data)
             asyncio.create_task(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -21,6 +21,9 @@ _BUDGET = {
     "session_summary": 400,  # drop if recent history exists
     "history": None,  # gets remaining budget
 }
+
+_SYSTEM_PROMPT_BUDGET = 800
+_RESPONSE_BUFFER_BUDGET = 4096
 
 _TOTAL_CONTEXT_BUDGET = 20_000  # tokens
 _CHARS_PER_TOKEN = 4
@@ -94,28 +97,28 @@ class ContextBuilder:
         summary: str | None = None
         history: list[dict[str, Any]] = []
 
-        if not isinstance(results[0], Exception):
-            profile_text = results[0]  # type: ignore[assignment]
+        if not isinstance(results[0], BaseException):
+            profile_text = cast(str | None, results[0])
         else:
             logger.warning("profile_fetch_failed", error=str(results[0]))
 
-        if not isinstance(results[1], Exception):
-            memories = results[1]  # type: ignore[assignment]
+        if not isinstance(results[1], BaseException):
+            memories = cast(list[str] | None, results[1])
         else:
             logger.warning("semantic_search_failed", error=str(results[1]))
 
-        if not isinstance(results[2], Exception):
-            summary = results[2]  # type: ignore[assignment]
+        if not isinstance(results[2], BaseException):
+            summary = cast(str | None, results[2])
         else:
             logger.warning("summary_fetch_failed", error=str(results[2]))
 
-        if not isinstance(results[3], Exception):
-            history = results[3]  # type: ignore[assignment]
+        if not isinstance(results[3], BaseException):
+            history = cast(list[dict[str, Any]], results[3])
         else:
             logger.warning("history_fetch_failed", error=str(results[3]))
 
         # Apply token budget constraints
-        fixed_tokens = _BUDGET["system_prompt"] + _BUDGET["response_buffer"]
+        fixed_tokens = _SYSTEM_PROMPT_BUDGET + _RESPONSE_BUFFER_BUDGET
         available = self._context_budget - fixed_tokens
 
         profile_tokens = _estimate_tokens(profile_text) if profile_text else 0
@@ -166,6 +169,6 @@ class ContextBuilder:
     def should_summarize(self, history: list[dict[str, Any]]) -> bool:
         """Check if history is long enough to warrant summarization."""
         history_tokens = _estimate_message_tokens(history)
-        fixed_tokens = _BUDGET["system_prompt"] + _BUDGET["response_buffer"]
+        fixed_tokens = _SYSTEM_PROMPT_BUDGET + _RESPONSE_BUFFER_BUDGET
         available = self._context_budget - fixed_tokens
         return history_tokens > available * self._summarize_at_pct

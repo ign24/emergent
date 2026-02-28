@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import time
+from contextlib import suppress
 from typing import Any
 
 import psutil
 import structlog
+
+from emergent.tools.registry import ToolDefinitionDict
 
 logger = structlog.get_logger(__name__)
 
@@ -21,7 +24,7 @@ async def system_info(tool_input: dict[str, Any]) -> str:
     # Cache with 30s TTL
     if "data" in _CACHE and now - _CACHE.get("ts", 0) < _CACHE_TTL:
         logger.debug("system_info_cache_hit")
-        return _CACHE["data"]
+        return str(_CACHE["data"])
 
     cpu_percent = psutil.cpu_percent(interval=0.5)
     ram = psutil.virtual_memory()
@@ -35,7 +38,7 @@ async def system_info(tool_input: dict[str, Any]) -> str:
         key=lambda p: p.info.get("cpu_percent") or 0,
         reverse=True,
     )[:5]:
-        try:
+        with suppress(psutil.NoSuchProcess, psutil.AccessDenied):
             processes.append(
                 {
                     "pid": proc.info["pid"],
@@ -44,8 +47,6 @@ async def system_info(tool_input: dict[str, Any]) -> str:
                     "mem_pct": round(proc.info.get("memory_percent") or 0, 1),
                 }
             )
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
 
     result_lines = [
         f"CPU: {cpu_percent:.1f}%",
@@ -58,7 +59,8 @@ async def system_info(tool_input: dict[str, Any]) -> str:
 
     for p in processes:
         result_lines.append(
-            f"  PID {p['pid']:6d} | {p['name'][:20]:<20} | CPU {p['cpu_pct']:5.1f}% | MEM {p['mem_pct']:5.1f}%"
+            f"  PID {p['pid']:6d} | {p['name'][:20]:<20} | "
+            f"CPU {p['cpu_pct']:5.1f}% | MEM {p['mem_pct']:5.1f}%"
         )
 
     result = "\n".join(result_lines)
@@ -69,7 +71,7 @@ async def system_info(tool_input: dict[str, Any]) -> str:
     return result
 
 
-TOOL_DEFINITION = {
+TOOL_DEFINITION: ToolDefinitionDict = {
     "name": "system_info",
     "description": (
         "Get a snapshot of system metrics: CPU usage, RAM, disk space, uptime, "

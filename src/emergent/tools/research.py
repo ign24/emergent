@@ -18,6 +18,7 @@ import structlog
 from emergent.memory.retriever import SemanticRetriever
 from emergent.memory.store import MemoryStore
 from emergent.research.types import ResearchFinding
+from emergent.tools.registry import ToolDefinitionDict
 from emergent.tools.web import _check_ssrf
 
 logger = structlog.get_logger(__name__)
@@ -428,7 +429,7 @@ def make_research_run_handler(worker: Any) -> Callable[..., Any]:
     return research_run
 
 
-RESEARCH_SEARCH_DEFINITION = {
+RESEARCH_SEARCH_DEFINITION: ToolDefinitionDict = {
     "name": "research_search",
     "description": (
         "Search through stored research findings. Searches by keyword in titles and "
@@ -456,7 +457,7 @@ RESEARCH_SEARCH_DEFINITION = {
     },
 }
 
-RESEARCH_RUN_DEFINITION = {
+RESEARCH_RUN_DEFINITION: ToolDefinitionDict = {
     "name": "research_run",
     "description": (
         "Run an ad-hoc research investigation on a specific topic. Searches across "
