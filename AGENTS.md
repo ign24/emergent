@@ -14,8 +14,10 @@ This file defines the working rules for AI agents editing this repository.
 - Telegram channel via `aiogram` v3
 - Terminal channel via `rich`
 - Persistent cron scheduler via `APScheduler`
+- LLM providers: Anthropic, OpenAI, Gemini, Ollama — with automatic fallback and prompt-complexity routing
 - Persistence via SQLite (WAL) and ChromaDB
 - Observability via `structlog` (JSON logs)
+- Research pipeline: arXiv, GitHub, HN, Reddit, RSS, Tavily — scheduled and ad-hoc
 
 ## Quick Commands
 - Run agent: `uv run python -m emergent`
@@ -69,16 +71,26 @@ This file defines the working rules for AI agents editing this repository.
 - `src/emergent/tools/system_info.py`: `system_info` tool
 - `src/emergent/tools/memory_tools.py`: `memory_search` + `memory_store` tool handlers
 - `src/emergent/tools/cron.py`: `cron_schedule` tool + APScheduler initialization
+- `src/emergent/tools/research.py`: `research_search` + `research_run` tool definitions and source fetchers (arXiv, GitHub, HN, Reddit, RSS, Tavily)
 - `src/emergent/channels/terminal.py`: interactive rich REPL with live dashboard and skill presets
 - `src/emergent/channels/telegram.py`: Telegram gateway (`aiogram` v3), per-user session persistence
 - `src/emergent/llm/client.py`: `LLMClient` protocol — provider-agnostic interface
 - `src/emergent/llm/models.py`: `LLMResponse`, `LLMTextBlock`, `LLMToolUseBlock`, `LLMUsage` dataclasses
 - `src/emergent/llm/factory.py`: `create_llm_client()` factory
+- `src/emergent/llm/pricing.py`: `MODEL_PRICING` table and `calculate_cost()` — USD/Mtok for all supported models
+- `src/emergent/llm/router.py`: `PromptRouter` — complexity-based routing (FAST/DEFAULT/STRONG) with LRU cache and LLM-judge mode
 - `src/emergent/llm/anthropic_client.py`: `AnthropicLLMClient`
+- `src/emergent/llm/openai_client.py`: `OpenAILLMClient`
+- `src/emergent/llm/gemini_client.py`: `GeminiLLMClient`
 - `src/emergent/llm/ollama_client.py`: `OllamaLLMClient`
 - `src/emergent/memory/store.py`: SQLite WAL CRUD for memory state (8 tables)
 - `src/emergent/memory/retriever.py`: `SemanticRetriever` — ChromaDB cosine similarity search
 - `src/emergent/memory/summarizer.py`: `summarize_conversation()` using Haiku model
+- `src/emergent/research/types.py`: `ResearchFinding`, `ScoredFinding` dataclasses
+- `src/emergent/research/sources.py`: domain configs, RSS feeds, query templates for all 6 research domains
+- `src/emergent/research/scoring.py`: deterministic relevance scoring (recency + engagement + keywords + authority)
+- `src/emergent/research/formatter.py`: `generate_markdown_report()` and `generate_telegram_digest()`
+- `src/emergent/research/worker.py`: `ResearchWorker` — scheduled (`run()`) and ad-hoc (`run_adhoc()`) research orchestrator
 - `src/emergent/observability/tracing.py`: `configure_logging()`, `trace_span()` context manager
 - `src/emergent/observability/banner.py`: `print_banner()`, `ConsoleNotifier`
 - `src/emergent/observability/metrics.py`: `print_dashboard()`, `print_triage()` CLI views

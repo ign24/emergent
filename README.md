@@ -20,7 +20,8 @@ It can execute shell commands, manage files, browse the web, inspect system stat
 - **No-framework agent loop**: custom ReAct-style runtime using native `tool_use`
 - **Deterministic safety classifier**: regex-based tiering before every tool call (no LLM in safety path)
 - **Multi-channel UX**: terminal + Telegram + optional voice channel
-- **Provider flexibility**: Anthropic, OpenAI, Gemini, and Ollama support for runtime and summarization
+- **Provider flexibility**: Anthropic, OpenAI, Gemini, and Ollama with automatic fallback and prompt-complexity routing
+- **Research module**: scheduled and on-demand research across arXiv, GitHub, HN, Reddit, RSS, and Tavily
 - **Persistent memory**: SQLite (WAL) + ChromaDB + session summaries
 - **Proactive cron jobs**: persistent scheduler backed by SQLite
 - **Structured observability**: JSON logs with trace IDs, latency, token, and cost signals
@@ -33,7 +34,7 @@ flowchart LR
   Telegram --> TelegramGateway --> AgentRuntime
   Voice --> AgentRuntime
   AgentRuntime --> ContextBuilder
-  AgentRuntime --> LLMProvider["Anthropic / OpenAI / Gemini / Ollama"]
+  AgentRuntime --> PromptRouter --> LLMProvider["Anthropic / OpenAI / Gemini / Ollama"]
   AgentRuntime --> ToolRegistry
   ContextBuilder --> SQLite["SQLite L0 (WAL)"]
   ContextBuilder --> ChromaDB["ChromaDB L1"]
@@ -41,6 +42,8 @@ flowchart LR
   SafetyClassifier --> Tier1["TIER_1 auto"]
   SafetyClassifier --> Tier2["TIER_2 confirm"]
   SafetyClassifier --> Tier3["TIER_3 blocked"]
+  ResearchWorker --> SQLite
+  ResearchWorker --> ChromaDB
 ```
 
 ## Safety Tiers
@@ -84,6 +87,26 @@ Conversations survive restarts. When history grows too large, Emergent auto-summ
 | `memory_search` | TIER_1 | Semantic memory lookup |
 | `memory_store` | TIER_1 | Store long-term facts |
 | `cron_schedule` | TIER_2 | Schedule persistent recurring tasks |
+| `research_search` | TIER_1 | Search stored research findings by keyword or semantic query |
+| `research_run` | TIER_1 | Ad-hoc research investigation on a given topic |
+
+## LLM Routing
+
+Emergent can route prompts to different models based on complexity, reducing cost for simple queries while using stronger models for demanding tasks.
+
+| Tier | When | Default model |
+|------|------|---------------|
+| `FAST` | Short/trivial queries (≤ 8 chars, greetings) | `fast_model` in config |
+| `DEFAULT` | Standard questions and moderate tasks | Primary `model` |
+| `STRONG` | Deep analysis, architecture, debugging | `strong_model` in config |
+
+Three routing modes are available:
+
+- `heuristic` — rule-based, zero overhead, no extra LLM call
+- `llm_judge` — classifies with a cheap model (LRU-cached, 5-min TTL)
+- `disabled` — always uses the primary model
+
+Automatic fallback: if the primary provider fails, Emergent retries with `fallback_providers` (default: `openai`, `gemini`).
 
 ## Hardcoded Guards
 
@@ -104,8 +127,10 @@ These values are verified at startup and are not user-modifiable at runtime.
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
-- One LLM provider:
+- At least one LLM provider:
   - Anthropic API key, or
+  - OpenAI API key, or
+  - Gemini API key, or
   - local Ollama server
 - Optional for Telegram channel: bot token + allowed user IDs
 - Optional for voice channel: local audio stack (PortAudio)
@@ -288,7 +313,11 @@ emergent/
 │   │   ├── client.py        # LLMClient protocol (provider-agnostic)
 │   │   ├── models.py        # LLMResponse, LLMUsage dataclasses
 │   │   ├── factory.py       # create_llm_client() factory
+│   │   ├── pricing.py       # per-model cost table (USD/Mtok)
+│   │   ├── router.py        # PromptRouter — complexity-based model routing
 │   │   ├── anthropic_client.py
+│   │   ├── openai_client.py
+│   │   ├── gemini_client.py
 │   │   └── ollama_client.py
 │   ├── tools/
 │   │   ├── registry.py      # ToolDefinition, ToolRegistry, SafetyTier
@@ -297,15 +326,24 @@ emergent/
 │   │   ├── web.py           # web_fetch (SSRF-protected)
 │   │   ├── system_info.py
 │   │   ├── memory_tools.py
-│   │   └── cron.py
+│   │   ├── cron.py
+│   │   └── research.py      # research_search + research_run tools
 │   ├── memory/
 │   │   ├── store.py         # SQLite WAL CRUD
 │   │   ├── retriever.py     # ChromaDB semantic retrieval
 │   │   └── summarizer.py    # auto-summarization (Haiku)
+│   ├── research/
+│   │   ├── types.py         # ResearchFinding, ScoredFinding dataclasses
+│   │   ├── sources.py       # domain configs, RSS feeds, query templates
+│   │   ├── scoring.py       # deterministic relevance scoring
+│   │   ├── formatter.py     # markdown report + Telegram digest generators
+│   │   └── worker.py        # ResearchWorker — scheduled and ad-hoc runs
 │   └── observability/
 │       ├── tracing.py       # trace spans, structured logging
 │       ├── banner.py        # startup banner
 │       └── metrics.py       # dashboard and triage CLI views
+├── scripts/
+│   └── bootstrap.sh         # one-command environment setup
 ├── tests/
 ├── config.yaml
 ├── .env.example
