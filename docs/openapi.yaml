@@ -1,0 +1,484 @@
+openapi: 3.1.0
+info:
+  title: Emergent HTTP API (Draft)
+  version: 1.0.0
+  summary: Baseline REST contract for future HTTP endpoints
+  description: |
+    This is a draft OpenAPI contract for Emergent.
+    It follows consistent REST conventions:
+    - versioned path prefix (/api/v1)
+    - standard success and error envelopes
+    - reusable pagination, filtering, and auth components
+    - explicit status codes and rate-limit headers
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development
+tags:
+  - name: System
+  - name: Users
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      description: Liveness endpoint for probes and uptime checks.
+      security: []
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [status, timestamp]
+                    properties:
+                      status:
+                        type: string
+                        const: ok
+                      timestamp:
+                        type: string
+                        format: date-time
+              examples:
+                healthy:
+                  value:
+                    data:
+                      status: ok
+                      timestamp: "2026-02-23T12:00:00Z"
+  /users:
+    get:
+      tags: [Users]
+      summary: List users
+      operationId: listUsers
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/perPage"
+        - $ref: "#/components/parameters/sort"
+        - $ref: "#/components/parameters/query"
+        - $ref: "#/components/parameters/fields"
+        - $ref: "#/components/parameters/status"
+      responses:
+        "200":
+          description: Users returned
+          headers:
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/XRateLimitLimit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/XRateLimitRemaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/XRateLimitReset"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [Users]
+      summary: Create user
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: User created
+          headers:
+            Location:
+              description: URI of created user
+              schema:
+                type: string
+                example: /api/v1/users/usr_123
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /users/{user_id}:
+    parameters:
+      - $ref: "#/components/parameters/userId"
+    get:
+      tags: [Users]
+      summary: Get user by id
+      operationId: getUser
+      responses:
+        "200":
+          description: User returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      tags: [Users]
+      summary: Update user attributes
+      operationId: updateUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          description: User updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [Users]
+      summary: Delete user
+      operationId: deleteUser
+      responses:
+        "204":
+          description: User deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  headers:
+    XRateLimitLimit:
+      description: Maximum requests allowed in window.
+      schema:
+        type: integer
+        example: 100
+    XRateLimitRemaining:
+      description: Remaining requests in current window.
+      schema:
+        type: integer
+        example: 95
+    XRateLimitReset:
+      description: Unix epoch seconds when the window resets.
+      schema:
+        type: integer
+        example: 1766851200
+    RetryAfter:
+      description: Seconds until next allowed request.
+      schema:
+        type: integer
+        example: 60
+  parameters:
+    userId:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Unique user identifier.
+    page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+      description: Page number for offset pagination.
+    perPage:
+      name: per_page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      description: Items per page.
+    sort:
+      name: sort
+      in: query
+      required: false
+      schema:
+        type: string
+        example: -created_at,name
+      description: Comma-separated sort fields. Prefix with '-' for desc.
+    query:
+      name: q
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Full-text search query.
+    fields:
+      name: fields
+      in: query
+      required: false
+      schema:
+        type: string
+        example: id,name,email
+      description: Sparse fieldset list.
+    status:
+      name: status
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [active, disabled]
+      description: Equality filter on user status.
+  responses:
+    Unauthorized:
+      description: Missing or invalid authentication token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          examples:
+            unauthorized:
+              value:
+                error:
+                  code: unauthorized
+                  message: Missing or invalid authentication.
+    Forbidden:
+      description: Authenticated but not authorized.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          examples:
+            forbidden:
+              value:
+                error:
+                  code: forbidden
+                  message: You do not have permission to perform this action.
+    NotFound:
+      description: Resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          examples:
+            notFound:
+              value:
+                error:
+                  code: not_found
+                  message: User not found.
+    Conflict:
+      description: Resource conflict.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          examples:
+            conflict:
+              value:
+                error:
+                  code: conflict
+                  message: Email already registered.
+    ValidationError:
+      description: Request data failed semantic validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ValidationErrorEnvelope"
+    RateLimited:
+      description: Rate limit exceeded.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          examples:
+            rateLimited:
+              value:
+                error:
+                  code: rate_limit_exceeded
+                  message: Rate limit exceeded. Try again in 60 seconds.
+    InternalError:
+      description: Unexpected internal error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          examples:
+            internal:
+              value:
+                error:
+                  code: internal_error
+                  message: Internal server error.
+  schemas:
+    User:
+      type: object
+      required: [id, email, name, status, created_at]
+      properties:
+        id:
+          type: string
+          example: usr_123
+        email:
+          type: string
+          format: email
+          example: alice@example.com
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Alice
+        status:
+          type: string
+          enum: [active, disabled]
+          example: active
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-02-23T10:30:00Z"
+    CreateUserRequest:
+      type: object
+      required: [email, name]
+      properties:
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+    UpdateUserRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        status:
+          type: string
+          enum: [active, disabled]
+      additionalProperties: false
+    UserResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/User"
+    UserListResponse:
+      type: object
+      required: [data, meta, links]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+        meta:
+          $ref: "#/components/schemas/PaginationMeta"
+        links:
+          $ref: "#/components/schemas/PaginationLinks"
+    PaginationMeta:
+      type: object
+      required: [total, page, per_page, total_pages]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+          example: 142
+        page:
+          type: integer
+          minimum: 1
+          example: 1
+        per_page:
+          type: integer
+          minimum: 1
+          example: 20
+        total_pages:
+          type: integer
+          minimum: 1
+          example: 8
+    PaginationLinks:
+      type: object
+      required: [self]
+      properties:
+        self:
+          type: string
+          example: /api/v1/users?page=1&per_page=20
+        next:
+          type: string
+          nullable: true
+          example: /api/v1/users?page=2&per_page=20
+        last:
+          type: string
+          nullable: true
+          example: /api/v1/users?page=8&per_page=20
+    ErrorDetail:
+      type: object
+      required: [field, message, code]
+      properties:
+        field:
+          type: string
+          example: email
+        message:
+          type: string
+          example: Must be a valid email address
+        code:
+          type: string
+          example: invalid_format
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: not_found
+            message:
+              type: string
+              example: User not found.
+    ValidationErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code:
+              type: string
+              const: validation_error
+            message:
+              type: string
+              example: Request validation failed.
+            details:
+              type: array
+              items:
+                $ref: "#/components/schemas/ErrorDetail"

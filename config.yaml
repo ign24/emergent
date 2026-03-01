@@ -2,12 +2,35 @@
 # Non-secret settings. Secrets go in .env
 
 agent:
-  provider: "anthropic"         # "anthropic" | "ollama"
+  provider: "anthropic"         # "anthropic" | "openai" | "gemini" | "ollama"
   model: "claude-sonnet-4-20250514"
-  summary_provider: "anthropic" # "anthropic" | "ollama"
+  routing_enabled: true
+  fast_provider: "anthropic"
+  fast_model: "claude-haiku-4-5-20251001"
+  strong_provider: "anthropic"
+  strong_model: "claude-sonnet-4-20250514"
+  summary_provider: "anthropic" # "anthropic" | "openai" | "gemini" | "ollama"
   haiku_model: "claude-haiku-4-5-20251001"
   ollama_base_url: "http://127.0.0.1:11434"
+  openai_base_url: "https://api.openai.com/v1"
   max_tokens: 4096
+
+  # Cost budgets (USD per session)
+  cost_budget_soft_usd: 0.50    # warning in logs + dashboard
+  cost_budget_hard_usd: 2.00    # cuts the session (raises error)
+
+  # Fallback providers — ordered list, tried after primary fails with fatal error
+  fallback_providers: ["openai", "gemini"]
+  # Fallback models — which model to use for each fallback provider
+  fallback_models:
+    openai: "gpt-4o-mini"
+    gemini: "gemini-2.0-flash"
+
+  # Routing mode: "heuristic" (keyword-based) | "llm_judge" (LLM classifier) | "disabled"
+  routing_mode: "heuristic"
+  # routing_classifier_provider: ""  # default: agent.provider
+  # routing_classifier_model: ""     # default: haiku_model
+
   # Guards — hardcoded, NOT overridable by the agent
   # These values are used by verify_guards_integrity() at startup
   max_iterations: 15
@@ -57,6 +80,8 @@ memory:
   trace_ttl_days: 30
   summarize_at_pct: 0.80  # trigger summarization at 80% of context budget
   context_budget_tokens: 20000
+  max_history_turns: 12  # fetch fewer past turns to reduce token burn
+  history_keep_after_summary: 4  # keep only the latest turns after summarizing
 
 observability:
   log_level: "INFO"
@@ -67,14 +92,19 @@ observability:
   alert_cost_per_request_warning: 0.08
 
 voice:
-  enabled: false
-  # Global key name (keyboard lib): e.g. f24, f13, pause, or a single char like "v"
-  ptt_key: "f24"
-  # Optional: exact physical key by scan code (recommended for rare keys like volume)
+  enabled: true
+  # Legacy keyboard settings (deprecated; /voice and /voice-off are preferred)
+  ptt_key: "right ctrl"
+  # Optional legacy physical key by scan code
   # ptt_scan_code: 115
   sample_rate: 16000
   channels: 1
   max_record_seconds: 15
+  # Continuous voice mode endpointing
+  vad_mode: 2
+  min_speech_ms: 250
+  silence_end_ms: 700
+  max_utterance_seconds: 20
   stt_model: "small"
   stt_device: "cpu"
   stt_compute_type: "int8"
@@ -91,3 +121,12 @@ voice:
   tts_sentence_silence: 0.15
   tts_max_chars: 500
   ui_beep: false
+
+research:
+  enabled: true
+  schedule: "30 9 * * *"
+  max_findings_per_domain: 5
+  highlight_threshold: 0.7
+  max_highlights: 5
+  web_search_provider: "tavily"
+  report_style: "academic-researcher"

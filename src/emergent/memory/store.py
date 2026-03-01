@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sqlite3
 import uuid
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import Any
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+_SESSION_NAME_WORD_PATTERN = re.compile(r"[A-Za-z0-9_]+")
 
 _SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -85,12 +88,53 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS chat_session_history (
+    chat_id INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (chat_id, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS session_metadata (
+    session_id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    channel TEXT,
+    first_prompt TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS research_findings (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    source TEXT NOT NULL,
+    title TEXT NOT NULL,
+    url TEXT NOT NULL,
+    summary TEXT,
+    relevance_score REAL,
+    is_highlight BOOLEAN DEFAULT 0,
+    published_at DATETIME,
+    metadata_json TEXT,
+    found_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(url)
+);
+
 CREATE INDEX IF NOT EXISTS idx_conversations_session ON conversations(session_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_timestamp ON conversations(timestamp);
 CREATE INDEX IF NOT EXISTS idx_traces_timestamp ON traces(timestamp);
 CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id);
 CREATE INDEX IF NOT EXISTS idx_spans_error ON spans(error) WHERE error IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_profile_confidence ON user_profile(confidence);
+CREATE INDEX IF NOT EXISTS idx_chat_session_history_chat_updated
+    ON chat_session_history(chat_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_metadata_updated
+    ON session_metadata(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_domain ON research_findings(domain);
+CREATE INDEX IF NOT EXISTS idx_findings_score ON research_findings(relevance_score DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_found ON research_findings(found_at);
+CREATE INDEX IF NOT EXISTS idx_findings_highlight
+    ON research_findings(is_highlight) WHERE is_highlight = 1;
+CREATE INDEX IF NOT EXISTS idx_findings_run ON research_findings(run_id);
 """
 
 
@@ -165,9 +209,78 @@ class MemoryStore:
 
     async def get_all_sessions(self) -> list[str]:
         rows = await self._execute(
-            "SELECT DISTINCT session_id FROM conversations ORDER BY MIN(timestamp) DESC"
+            "SELECT session_id, MAX(rowid) AS last_row FROM conversations "
+            "GROUP BY session_id ORDER BY last_row DESC"
         )
         return [r["session_id"] for r in rows]
+
+    async def get_all_sessions_with_names(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = await self._execute(
+            "SELECT c.session_id AS session_id, "
+            "COALESCE(m.display_name, c.session_id) AS display_name, "
+            "COUNT(*) AS turns, MAX(c.rowid) AS last_row "
+            "FROM conversations c "
+            "LEFT JOIN session_metadata m ON m.session_id = c.session_id "
+            "GROUP BY c.session_id "
+            "ORDER BY last_row DESC LIMIT ?",
+            (int(limit),),
+        )
+        return [
+            {
+                "session_id": r["session_id"],
+                "display_name": r["display_name"],
+                "turns": int(r["turns"]),
+            }
+            for r in rows
+        ]
+
+    async def ensure_session(self, session_id: str, channel: str | None = None) -> None:
+        await self._execute(
+            "INSERT OR IGNORE INTO session_metadata "
+            "(session_id, display_name, channel, updated_at) "
+            "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+            (session_id, session_id, channel),
+        )
+
+    async def auto_name_session_from_first_prompt(
+        self,
+        session_id: str,
+        prompt: str,
+        channel: str | None = None,
+    ) -> str:
+        rows = await self._execute(
+            "SELECT display_name FROM session_metadata WHERE session_id = ?",
+            (session_id,),
+        )
+
+        if rows:
+            existing = str(rows[0]["display_name"] or "").strip()
+            if existing and existing != session_id:
+                await self._execute(
+                    "UPDATE session_metadata SET updated_at = CURRENT_TIMESTAMP "
+                    "WHERE session_id = ?",
+                    (session_id,),
+                )
+                return existing
+
+        display_name = self._build_session_name(prompt)
+        first_prompt = (prompt or "").strip()[:500]
+        await self._execute(
+            "INSERT OR REPLACE INTO session_metadata "
+            "(session_id, display_name, channel, first_prompt, updated_at) "
+            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            (session_id, display_name, channel, first_prompt),
+        )
+        return display_name
+
+    def _build_session_name(self, prompt: str) -> str:
+        stripped = (prompt or "").strip()
+        first_line = stripped.splitlines()[0] if stripped else ""
+        words = _SESSION_NAME_WORD_PATTERN.findall(first_line.lower())
+        if not words:
+            return "sesion"
+        name = "-".join(words[:6])
+        return name[:64]
 
     # --- Traces ---
 
@@ -283,6 +396,11 @@ class MemoryStore:
             "VALUES (?, ?, CURRENT_TIMESTAMP)",
             (chat_id, session_id),
         )
+        await self._execute(
+            "INSERT OR REPLACE INTO chat_session_history (chat_id, session_id, updated_at) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (chat_id, session_id),
+        )
 
     async def get_session_id(self, chat_id: int) -> str | None:
         rows = await self._execute(
@@ -290,6 +408,144 @@ class MemoryStore:
             (chat_id,),
         )
         return rows[0]["session_id"] if rows else None
+
+    async def list_chat_sessions(self, chat_id: int) -> list[str]:
+        rows = await self._execute(
+            "SELECT session_id FROM chat_session_history "
+            "WHERE chat_id = ? ORDER BY updated_at DESC, rowid DESC",
+            (chat_id,),
+        )
+        sessions = [r["session_id"] for r in rows]
+
+        current = await self.get_session_id(chat_id)
+        if current and current not in sessions:
+            sessions.insert(0, current)
+        return sessions
+
+    async def list_chat_sessions_with_names(
+        self, chat_id: int, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        rows = await self._execute(
+            "SELECT h.session_id AS session_id, "
+            "COALESCE(m.display_name, h.session_id) AS display_name "
+            "FROM chat_session_history h "
+            "LEFT JOIN session_metadata m ON m.session_id = h.session_id "
+            "WHERE h.chat_id = ? "
+            "ORDER BY h.updated_at DESC, h.rowid DESC LIMIT ?",
+            (chat_id, int(limit)),
+        )
+        items = [
+            {
+                "session_id": r["session_id"],
+                "display_name": r["display_name"],
+            }
+            for r in rows
+        ]
+
+        current = await self.get_session_id(chat_id)
+        if current and all(item["session_id"] != current for item in items):
+            items.insert(0, {"session_id": current, "display_name": current})
+        return items
+
+    # --- Research Findings ---
+
+    async def save_research_findings(self, findings: list[dict[str, Any]]) -> int:
+        """Bulk insert research findings. Returns number of inserted rows."""
+        if not findings:
+            return 0
+
+        before = await self._execute("SELECT COUNT(*) AS count FROM research_findings")
+        params: list[tuple[Any, ...]] = []
+        for finding in findings:
+            params.append(
+                (
+                    str(finding.get("id", uuid.uuid4())),
+                    str(finding.get("run_id", "")),
+                    str(finding.get("domain", "")),
+                    str(finding.get("source", "")),
+                    str(finding.get("title", "")),
+                    str(finding.get("url", "")),
+                    str(finding.get("summary", "")),
+                    float(finding.get("relevance_score", 0.0)),
+                    bool(finding.get("is_highlight", False)),
+                    finding.get("published_at"),
+                    json.dumps(finding.get("metadata", {})),
+                )
+            )
+
+        await self._executemany(
+            "INSERT OR IGNORE INTO research_findings "
+            "(id, run_id, domain, source, title, url, summary, relevance_score, "
+            "is_highlight, published_at, metadata_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params,
+        )
+        after = await self._execute("SELECT COUNT(*) AS count FROM research_findings")
+        return int(after[0]["count"]) - int(before[0]["count"])
+
+    async def get_research_highlights(self, days: int = 7) -> list[dict[str, Any]]:
+        rows = await self._execute(
+            "SELECT * FROM research_findings "
+            "WHERE is_highlight = 1 AND found_at >= datetime('now', ? || ' days') "
+            "ORDER BY relevance_score DESC",
+            (f"-{int(days)}",),
+        )
+        return [self._row_to_research_dict(row) for row in rows]
+
+    async def get_research_by_domain(self, domain: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = await self._execute(
+            "SELECT * FROM research_findings WHERE domain = ? "
+            "ORDER BY relevance_score DESC LIMIT ?",
+            (domain, int(limit)),
+        )
+        return [self._row_to_research_dict(row) for row in rows]
+
+    async def search_research(
+        self, query: str, limit: int = 10, domain: str | None = None
+    ) -> list[dict[str, Any]]:
+        pattern = f"%{query.strip()}%"
+        if domain:
+            rows = await self._execute(
+                "SELECT * FROM research_findings "
+                "WHERE domain = ? AND (title LIKE ? OR summary LIKE ?) "
+                "ORDER BY relevance_score DESC LIMIT ?",
+                (domain, pattern, pattern, int(limit)),
+            )
+        else:
+            rows = await self._execute(
+                "SELECT * FROM research_findings "
+                "WHERE title LIKE ? OR summary LIKE ? "
+                "ORDER BY relevance_score DESC LIMIT ?",
+                (pattern, pattern, int(limit)),
+            )
+        return [self._row_to_research_dict(row) for row in rows]
+
+    async def cleanup_old_research(self, ttl_days: int = 90) -> None:
+        await self._execute(
+            "DELETE FROM research_findings WHERE found_at < datetime('now', ? || ' days')",
+            (f"-{int(ttl_days)}",),
+        )
+
+    def _row_to_research_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        metadata_raw = row["metadata_json"]
+        try:
+            metadata = json.loads(metadata_raw) if metadata_raw else {}
+        except json.JSONDecodeError:
+            metadata = {}
+        return {
+            "id": row["id"],
+            "run_id": row["run_id"],
+            "domain": row["domain"],
+            "source": row["source"],
+            "title": row["title"],
+            "url": row["url"],
+            "summary": row["summary"],
+            "relevance_score": row["relevance_score"],
+            "is_highlight": bool(row["is_highlight"]),
+            "published_at": row["published_at"],
+            "found_at": row["found_at"],
+            "metadata": metadata,
+        }
 
     # --- Cleanup (APScheduler job) ---
 
@@ -304,6 +560,7 @@ class MemoryStore:
             "DELETE FROM traces WHERE timestamp < datetime('now', ? || ' days')",
             (f"-{int(traces_ttl_days)}",),
         )
+        await self.cleanup_old_research(ttl_days=conversations_ttl_days)
         logger.info("cleanup_done", conv_ttl=conversations_ttl_days, trace_ttl=traces_ttl_days)
 
     async def decay_profile_confidence(self) -> None:

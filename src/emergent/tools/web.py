@@ -10,6 +10,7 @@ import httpx
 import structlog
 
 from emergent import SafetyViolationError
+from emergent.tools.registry import ToolDefinitionDict
 
 logger = structlog.get_logger(__name__)
 
@@ -117,7 +118,7 @@ async def web_fetch(tool_input: dict[str, Any]) -> str:
     return "Error: max retries exceeded"
 
 
-TOOL_DEFINITION = {
+TOOL_DEFINITION: ToolDefinitionDict = {
     "name": "web_fetch",
     "description": (
         "Fetch content from a public HTTPS URL. Returns text content, truncated at 10,000 chars. "
