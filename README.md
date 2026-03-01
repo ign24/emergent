@@ -129,8 +129,10 @@ TELEGRAM_ALLOWED_USER_IDS=123456789          # optional
 # Optional overrides
 # EMERGENT_PROVIDER=anthropic                # anthropic | ollama
 # EMERGENT_MODEL=claude-sonnet-4-20250514
+# EMERGENT_HAIKU_MODEL=claude-haiku-4-5-20251001
 # EMERGENT_SUMMARY_PROVIDER=ollama
 # EMERGENT_OLLAMA_BASE_URL=http://127.0.0.1:11434
+# EMERGENT_DATA_DIR=./data
 ```
 
 If you use Telegram, get your user ID from [@userinfobot](https://t.me/userinfobot).
@@ -149,6 +151,13 @@ make test-security
 
 # Live E2E (requires configured provider credentials)
 make test-e2e
+
+# Lint and format
+make lint
+make format
+
+# Type check
+make typecheck
 ```
 
 At startup, the banner shows enabled channels, database paths, scheduler jobs, and log file.
@@ -218,20 +227,38 @@ uv tool install . --reinstall
 ```text
 emergent/
 ├── src/emergent/
-│   ├── __main__.py
-│   ├── config.py
+│   ├── __init__.py          # EmergentError base exception hierarchy
+│   ├── __main__.py          # entry point, wires all components
+│   ├── config.py            # settings loading (.env + config.yaml)
 │   ├── agent/
+│   │   ├── context.py       # ContextBuilder — token-budgeted context assembly
+│   │   ├── prompts.py       # system prompt builders
+│   │   └── runtime.py       # AgentRuntime — core ReAct loop
 │   ├── channels/
-│   │   ├── terminal.py
-│   │   ├── telegram.py
-│   │   └── voice.py
+│   │   ├── terminal.py      # rich interactive REPL
+│   │   └── telegram.py      # aiogram v3 polling gateway
 │   ├── llm/
+│   │   ├── client.py        # LLMClient protocol (provider-agnostic)
+│   │   ├── models.py        # LLMResponse, LLMUsage dataclasses
+│   │   ├── factory.py       # create_llm_client() factory
 │   │   ├── anthropic_client.py
-│   │   ├── ollama_client.py
-│   │   └── factory.py
+│   │   └── ollama_client.py
 │   ├── tools/
+│   │   ├── registry.py      # ToolDefinition, ToolRegistry, SafetyTier
+│   │   ├── shell.py         # shell_execute + safety classifier
+│   │   ├── files.py         # 8 file tools
+│   │   ├── web.py           # web_fetch (SSRF-protected)
+│   │   ├── system_info.py
+│   │   ├── memory_tools.py
+│   │   └── cron.py
 │   ├── memory/
+│   │   ├── store.py         # SQLite WAL CRUD
+│   │   ├── retriever.py     # ChromaDB semantic retrieval
+│   │   └── summarizer.py    # auto-summarization (Haiku)
 │   └── observability/
+│       ├── tracing.py       # trace spans, structured logging
+│       ├── banner.py        # startup banner
+│       └── metrics.py       # dashboard and triage CLI views
 ├── tests/
 ├── config.yaml
 ├── .env.example
